@@ -1,4 +1,6 @@
 import copy
+import sys
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import itertools
@@ -7,6 +9,10 @@ import matplotlib as mpl
 import matplotlib.patches as patches
 import matplotlib.font_manager as fm
 from openpyxl import load_workbook
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_FILE = ROOT_DIR / "data" / "产品数据.xlsx"
+RESULT_FIGURE = ROOT_DIR / "outputs" / "result.png"
 # 图片显示中文
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 字体设置
 plt.rcParams['axes.unicode_minus'] = False  # 减号unicode编码
@@ -195,11 +201,11 @@ def result_plot(item):
 
     plt.title('面积利用率:{:.2f}%'.format(eff), fontsize=12)
     plt.axis('off')  # 不显示坐标框
+    plt.savefig(RESULT_FIGURE)
     plt.show()
-    plt.savefig("result.png")
 
 def get_para():
-    wb = load_workbook('产品数据.xlsx', data_only=True)
+    wb = load_workbook(DATA_FILE, data_only=True)
     # 选择活动的工作表
     sheetname = int(input("请输入产品数据表: "))
     ws = wb['Sheet%d'%sheetname]

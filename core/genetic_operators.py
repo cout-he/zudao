@@ -4,7 +4,7 @@
 """
 
 import random
-from config import TOURNAMENT_SIZE, CROSSOVER_RATE, MUTATION_RATE
+from core.config import TOURNAMENT_SIZE, CROSSOVER_RATE, MUTATION_RATE
 
 
 def tournament_selection(population, fitness_values, tournament_size=TOURNAMENT_SIZE):

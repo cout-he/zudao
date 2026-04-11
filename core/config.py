@@ -2,6 +2,7 @@
 """
 遗传算法配置参数
 """
+from pathlib import Path
 
 # 钢板参数
 PANEL_WIDTH = 1250          # 大板宽度 (mm)
@@ -61,3 +62,9 @@ RANDOM_SEED = 42
 
 # 随机种子（可选，用于复现结果）
 RANDOM_SEED = 42            # 固定随机种子便于复现
+ROOT_DIR = Path(__file__).resolve().parent.parent
+CORE_DIR = ROOT_DIR / "core"
+SCRIPTS_DIR = ROOT_DIR / "scripts"
+DATA_DIR = ROOT_DIR / "data"
+OUTPUT_DIR = ROOT_DIR / "outputs"
+DEFAULT_DATA_FILE = DATA_DIR / "产品数据.xlsx"

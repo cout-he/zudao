@@ -5,7 +5,12 @@
 
 import pandas as pd
 from openpyxl import load_workbook
-from config import SCALE_FACTOR, MIN_CUT_GAP, VERTICAL_CUT_INCLUSIVE
+from core.config import (
+    DEFAULT_DATA_FILE,
+    SCALE_FACTOR,
+    MIN_CUT_GAP,
+    VERTICAL_CUT_INCLUSIVE,
+)
 
 
 class Item:
@@ -28,6 +33,8 @@ def load_demand_from_excel(filepath='产品数据.xlsx', sheet_num=1):
     返回:
         demand_info: dict，包含Width, Length, num, Weight列表
     """
+    if filepath is None:
+        filepath = DEFAULT_DATA_FILE
     wb = load_workbook(filepath, data_only=True)
     ws = wb[f'Sheet{sheet_num}']
     

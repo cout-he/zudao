@@ -13,7 +13,7 @@ import math
 from functools import lru_cache
 from itertools import product
 
-from config import (
+from core.config import (
     PANEL_WIDTH,
     MIN_CUT_GAP,
     PENALTY_VALUE,
@@ -863,7 +863,7 @@ def merge_same_pattern_strips(strips):
 
 if __name__ == "__main__":
     # 测试解码器
-    from data_loader import load_demand_from_excel, expand_demand, Item
+    from core.data_loader import load_demand_from_excel, expand_demand, Item
     import random
     
     # 加载数据

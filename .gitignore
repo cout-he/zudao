@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.vscode/
+.idea/
+
+.pytest_cache/
+.mypy_cache/
+
+outputs/*.png
+outputs/*.jpg
+outputs/*.jpeg
+outputs/*.pdf

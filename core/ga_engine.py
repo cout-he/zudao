@@ -5,14 +5,14 @@
 
 import random
 import time
-from config import (
+from core.config import (
     POPULATION_SIZE, MAX_GENERATIONS, 
     CROSSOVER_RATE, MUTATION_RATE, ELITE_SIZE, RANDOM_SEED,
     DECODER_MODE, ENABLE_LOCAL_SEARCH, LOCAL_SEARCH_INTERVAL,
     LOCAL_SEARCH_STEPS, FINAL_LOCAL_SEARCH_ROUNDS, EARLY_STOPPING_PATIENCE
 )
-from decoder import calculate_fitness, decode_by_mode, calculate_efficiency
-from genetic_operators import tournament_selection, crossover, mutate
+from core.decoder import calculate_fitness, decode_by_mode, calculate_efficiency
+from core.genetic_operators import tournament_selection, crossover, mutate
 
 
 class GeneticAlgorithm:
@@ -420,7 +420,7 @@ class GeneticAlgorithm:
 
 if __name__ == "__main__":
     # 测试遗传算法
-    from data_loader import load_demand_from_excel, expand_demand
+    from core.data_loader import load_demand_from_excel, expand_demand
     
     # 加载数据
     demand = load_demand_from_excel(sheet_num=1)

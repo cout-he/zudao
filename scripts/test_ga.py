@@ -4,12 +4,16 @@
 """
 
 import sys
-sys.path.append('D:/A-myprofile/zudao')
+from pathlib import Path
 
-from config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE
-from data_loader import expand_demand
-from ga_engine_fast import GeneticAlgorithm
-from decoder import merge_same_pattern_strips
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE
+from core.data_loader import expand_demand
+from core.ga_engine_fast import GeneticAlgorithm
+from core.decoder import merge_same_pattern_strips
 import pandas as pd
 
 # 直接定义5种产品的需求数据

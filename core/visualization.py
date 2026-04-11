@@ -6,7 +6,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
-from config import PANEL_WIDTH
+from core.config import PANEL_WIDTH
 
 # 图片显示中文
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -592,8 +592,8 @@ def print_solution_summary(solution, type_info):
 
 if __name__ == "__main__":
     # 测试可视化
-    from data_loader import load_demand_from_excel, expand_demand
-    from decoder import decode
+    from core.data_loader import load_demand_from_excel, expand_demand
+    from core.decoder import decode
     import random
     
     # 加载数据

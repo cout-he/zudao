@@ -5,9 +5,13 @@
 """
 
 import sys
-sys.path.append('D:/A-myprofile/zudao')
+from pathlib import Path
 
-from config import PANEL_WIDTH, MIN_CUT_GAP
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.config import PANEL_WIDTH, MIN_CUT_GAP
 import itertools
 import pandas as pd
 

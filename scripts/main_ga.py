@@ -4,20 +4,22 @@
 """
 
 import sys
-import os
+from pathlib import Path
 
 # 添加当前目录到路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-from config import (
+from core.config import (
     POPULATION_SIZE, MAX_GENERATIONS, 
     CROSSOVER_RATE, MUTATION_RATE, PANEL_WIDTH, MIN_CUT_GAP, SCALE_FACTOR,
-    DECODER_MODE
+    DECODER_MODE, OUTPUT_DIR
 )
-from data_loader import load_demand_from_excel, expand_demand
-from ga_engine_fast import GeneticAlgorithm
-from decoder import decode, calculate_efficiency, get_cutting_plan, merge_same_pattern_strips
-from visualization import (
+from core.data_loader import load_demand_from_excel, expand_demand
+from core.ga_engine_fast import GeneticAlgorithm
+from core.decoder import decode, calculate_efficiency, get_cutting_plan, merge_same_pattern_strips
+from core.visualization import (
     plot_compact_cutting_plan, plot_evolution_history,
     plot_stage_based_cutting_plan,
     plot_strip_details, print_solution_summary
@@ -153,7 +155,7 @@ def main():
     # 绘制进化曲线
     plot_evolution_history(
         ga.history,
-        save_path='ga_fast_evolution_history.png',
+        save_path=OUTPUT_DIR / 'ga_fast_evolution_history.png',
         show=False
     )
     
@@ -166,7 +168,7 @@ def main():
         plot_stage_based_cutting_plan(
             solution['strips'],
             real_efficiency,
-            save_path='ga_fast_cutting_plan.png',
+            save_path=OUTPUT_DIR / 'ga_fast_cutting_plan.png',
             show=False
         )
     else:
@@ -174,7 +176,7 @@ def main():
             merged_strips[:max_strips_to_plot],
             repeat_counts[:max_strips_to_plot],
             real_efficiency,
-            save_path='ga_fast_cutting_plan.png',
+            save_path=OUTPUT_DIR / 'ga_fast_cutting_plan.png',
             show=False
         )
     
@@ -182,7 +184,7 @@ def main():
     plot_strip_details(
         merged_strips,
         type_info,
-        save_path='ga_fast_strip_details.png',
+        save_path=OUTPUT_DIR / 'ga_fast_strip_details.png',
         show=False
     )
     

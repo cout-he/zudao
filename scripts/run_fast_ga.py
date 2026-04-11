@@ -4,13 +4,20 @@
 自动生成并保存独立的 GA 结果图文件。
 """
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 
-from config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE
-from data_loader import expand_demand
-from decoder import merge_same_pattern_strips
-from ga_engine_fast import GeneticAlgorithm
-from visualization import (
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE, OUTPUT_DIR
+from core.data_loader import expand_demand
+from core.decoder import merge_same_pattern_strips
+from core.ga_engine_fast import GeneticAlgorithm
+from core.visualization import (
     plot_compact_cutting_plan,
     plot_evolution_history,
     plot_stage_based_cutting_plan,
@@ -18,9 +25,9 @@ from visualization import (
 )
 
 
-GA_FAST_CUTTING_PLAN = "ga_fast_cutting_plan.png"
-GA_FAST_EVOLUTION = "ga_fast_evolution_history.png"
-GA_FAST_STRIP_DETAILS = "ga_fast_strip_details.png"
+GA_FAST_CUTTING_PLAN = OUTPUT_DIR / "ga_fast_cutting_plan.png"
+GA_FAST_EVOLUTION = OUTPUT_DIR / "ga_fast_evolution_history.png"
+GA_FAST_STRIP_DETAILS = OUTPUT_DIR / "ga_fast_strip_details.png"
 
 
 def build_plot_history(history):
