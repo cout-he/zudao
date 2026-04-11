@@ -9,7 +9,19 @@
 - 长度相近的小板放在一起可以减少浪费
 """
 
-from config import PANEL_WIDTH, MIN_CUT_GAP, PENALTY_VALUE
+import math
+from functools import lru_cache
+from itertools import product
+
+from config import (
+    PANEL_WIDTH,
+    MIN_CUT_GAP,
+    PENALTY_VALUE,
+    DECODER_MODE,
+    VERTICAL_CUT_INCLUSIVE,
+    PATTERN_TOP_CANDIDATES,
+    PATTERN_MIN_SAVINGS,
+)
 
 
 class Strip:
@@ -53,6 +65,91 @@ class Strip:
     
     def __repr__(self):
         return f"Strip(width={self.used_width}, length={self.strip_length}, items={len(self.items)})"
+
+
+def _item_width_is_valid(width):
+    if VERTICAL_CUT_INCLUSIVE:
+        return width >= MIN_CUT_GAP
+    return width > MIN_CUT_GAP
+
+
+def _strip_constraint_penalty(strip):
+    penalty = 0
+    if strip.used_width > 0 and strip.used_width < MIN_CUT_GAP:
+        penalty += PENALTY_VALUE
+    for item in strip.items:
+        if not _item_width_is_valid(item.width):
+            penalty += PENALTY_VALUE
+    return penalty
+
+
+@lru_cache(maxsize=16)
+def _build_pattern_library(type_specs):
+    """
+    为当前物料规格生成可行 pattern 库。
+    pattern 的目标不是只追求宽度占满，而是优先追求“比单独生产更省长度”。
+    """
+    widths = [spec[1] for spec in type_specs]
+    lengths = [spec[2] for spec in type_specs]
+    max_counts = [PANEL_WIDTH // width for width in widths]
+    standalone_length_per_item = [
+        length / max(1, PANEL_WIDTH // width) for width, length in zip(widths, lengths)
+    ]
+
+    patterns = []
+    for counts in product(*[range(limit + 1) for limit in max_counts]):
+        if not any(counts):
+            continue
+
+        used_width = sum(count * width for count, width in zip(counts, widths))
+        if used_width <= 0 or used_width > PANEL_WIDTH:
+            continue
+
+        active = [idx for idx, count in enumerate(counts) if count > 0]
+        if any(not _item_width_is_valid(widths[idx]) for idx in active):
+            continue
+
+        strip_length = max(lengths[idx] for idx in active)
+        produced_area = sum(
+            counts[idx] * widths[idx] * lengths[idx] for idx in active
+        )
+        sheet_area = PANEL_WIDTH * strip_length
+        efficiency = produced_area / sheet_area if sheet_area else 0.0
+
+        standalone_length = sum(
+            counts[idx] * standalone_length_per_item[idx] for idx in active
+        )
+        savings = standalone_length - strip_length
+        if savings < PATTERN_MIN_SAVINGS:
+            continue
+
+        patterns.append(
+            {
+                "counts": counts,
+                "used_width": used_width,
+                "strip_length": strip_length,
+                "efficiency": efficiency,
+                "savings": savings,
+                "waste_width": PANEL_WIDTH - used_width,
+            }
+        )
+
+    patterns.sort(
+        key=lambda p: (
+            -round(p["savings"], 6),
+            -round(p["efficiency"], 6),
+            p["waste_width"],
+            p["strip_length"],
+        )
+    )
+    return tuple(patterns)
+
+
+def _get_type_specs(items):
+    specs = {}
+    for item in items:
+        specs[item.type_id] = (item.type_id, item.width, item.length)
+    return tuple(specs[key] for key in sorted(specs))
 
 
 def decode(individual, items):
@@ -432,22 +529,234 @@ def decode_with_length_priority(individual, items):
     return total_length, strips, penalty
 
 
-def calculate_fitness(individual, items, use_hybrid=True):
+def decode_stage_based(individual, items):
+    """
+    阶段式解码器：
+    1. 先根据染色体顺序生成当前阶段的宽度组合
+    2. 再像原始算法一样，为该组合计算一个阶段连续生产长度
+    3. 用这一阶段一次性完成一批需求
+    """
+    remaining_counts = {}
+    items_by_type = {}
+    lengths_by_type = {}
+    widths_by_type = {}
+
+    for idx in individual:
+        item = items[idx]
+        remaining_counts[item.type_id] = remaining_counts.get(item.type_id, 0) + 1
+        items_by_type.setdefault(item.type_id, []).append(item)
+        lengths_by_type[item.type_id] = item.length
+        widths_by_type[item.type_id] = item.width
+
+    ordered_type_stream = [items[idx].type_id for idx in individual]
+    consume_offsets = {type_id: 0 for type_id in remaining_counts}
+    strips = []
+    penalty = 0
+    cursor = 0
+
+    def fill_stage_combination():
+        nonlocal cursor
+        combination = {}
+        used_width = 0
+        visited_without_add = 0
+
+        while visited_without_add < len(ordered_type_stream):
+            type_id = ordered_type_stream[cursor % len(ordered_type_stream)]
+            cursor += 1
+            visited_without_add += 1
+
+            if remaining_counts.get(type_id, 0) <= 0:
+                continue
+
+            item_width = widths_by_type[type_id]
+            if used_width + item_width > PANEL_WIDTH:
+                continue
+
+            combination[type_id] = combination.get(type_id, 0) + 1
+            used_width += item_width
+            visited_without_add = 0
+
+            # 如果剩余宽度已经小于最小产品宽度，就停止填充
+            feasible_widths = [
+                widths_by_type[t] for t, cnt in remaining_counts.items()
+                if cnt > 0 and t in widths_by_type
+            ]
+            if feasible_widths:
+                min_width = min(feasible_widths)
+                remain = PANEL_WIDTH - used_width
+                if remain < min_width:
+                    break
+
+        return combination, used_width
+
+    while sum(remaining_counts.values()) > 0:
+        combination, used_width = fill_stage_combination()
+        if not combination:
+            break
+
+        cut_length = min(
+            lengths_by_type[type_id] * math.ceil(remaining_counts[type_id] / combination[type_id])
+            for type_id in combination
+        )
+
+        produced_counts = {
+            type_id: min(
+                remaining_counts[type_id],
+                (cut_length // lengths_by_type[type_id]) * combination[type_id]
+            )
+            for type_id in combination
+        }
+
+        stage_strip = Strip()
+        for type_id, count in combination.items():
+            take = count
+            start = consume_offsets[type_id]
+            end = start + take
+            stage_items = items_by_type[type_id][start:end]
+            consume_offsets[type_id] = end
+            for item in stage_items:
+                stage_strip.add_item(item)
+
+        stage_strip.strip_length = cut_length
+        penalty += _strip_constraint_penalty(stage_strip)
+        strips.append(stage_strip)
+
+        for type_id, produced in produced_counts.items():
+            remaining_counts[type_id] = max(0, remaining_counts[type_id] - produced)
+
+    total_length = sum(strip.strip_length for strip in strips)
+    return total_length, strips, penalty
+
+
+def decode_pattern_guided(individual, items):
+    """
+    基于 pattern 库的解码器。
+    先根据当前需求生成高价值组合，再用染色体顺序决定“优先满足哪一类”的 pattern。
+    """
+    type_specs = _get_type_specs(items)
+    patterns = _build_pattern_library(type_specs)
+    type_index_map = {spec[0]: idx for idx, spec in enumerate(type_specs)}
+
+    ordered_items = [items[idx] for idx in individual]
+    items_by_type = {spec[0]: [] for spec in type_specs}
+    for item in ordered_items:
+        items_by_type[item.type_id].append(item)
+
+    remaining_counts = {type_id: len(type_items) for type_id, type_items in items_by_type.items()}
+    consume_offsets = {type_id: 0 for type_id in items_by_type}
+    strips = []
+    penalty = 0
+    anchor_cursor = 0
+
+    def remaining_total():
+        return sum(remaining_counts.values())
+
+    while remaining_total() > 0:
+        while anchor_cursor < len(ordered_items) and remaining_counts[ordered_items[anchor_cursor].type_id] == 0:
+            anchor_cursor += 1
+        if anchor_cursor >= len(ordered_items):
+            break
+
+        anchor_type = ordered_items[anchor_cursor].type_id
+        feasible_patterns = []
+        for pattern in patterns:
+            counts = pattern["counts"]
+            anchor_count = counts[type_index_map[anchor_type]]
+            if anchor_count <= 0:
+                continue
+            if any(
+                counts[type_index_map[type_id]] > remaining_counts[type_id]
+                for type_id in remaining_counts
+            ):
+                continue
+
+            score = (
+                pattern["savings"] * 1000.0
+                + pattern["efficiency"] * 100.0
+                - pattern["waste_width"] * 0.2
+                + anchor_count * 0.5
+            )
+            feasible_patterns.append((score, pattern))
+
+        if feasible_patterns:
+            feasible_patterns.sort(key=lambda pair: pair[0], reverse=True)
+            _, best_pattern = feasible_patterns[:PATTERN_TOP_CANDIDATES][0]
+        else:
+            # 保底：给 anchor_type 构造一个纯类型 strip
+            anchor_width = type_specs[type_index_map[anchor_type]][1]
+            max_count = min(
+                remaining_counts[anchor_type],
+                PANEL_WIDTH // anchor_width,
+            )
+            counts = [0] * len(type_specs)
+            counts[type_index_map[anchor_type]] = max_count
+            best_pattern = {
+                "counts": tuple(counts),
+                "used_width": max_count * anchor_width,
+                "strip_length": type_specs[type_index_map[anchor_type]][2],
+                "efficiency": 0.0,
+                "savings": 0.0,
+                "waste_width": PANEL_WIDTH - max_count * anchor_width,
+            }
+
+        strip = Strip()
+        for type_id, type_items in items_by_type.items():
+            type_pos = type_index_map[type_id]
+            need_count = best_pattern["counts"][type_pos]
+            if need_count <= 0:
+                continue
+
+            start = consume_offsets[type_id]
+            end = start + need_count
+            chosen_items = type_items[start:end]
+            consume_offsets[type_id] = end
+            remaining_counts[type_id] -= need_count
+
+            for item in chosen_items:
+                strip.add_item(item)
+
+        penalty += _strip_constraint_penalty(strip)
+        strips.append(strip)
+
+    total_length = sum(strip.strip_length for strip in strips)
+    return total_length, strips, penalty
+
+
+def decode_by_mode(individual, items, mode=None):
+    """
+    按配置选择解码策略。
+    """
+    decoder_mode = (mode or DECODER_MODE).lower()
+
+    if decoder_mode == 'simple':
+        return decode(individual, items)
+    if decoder_mode == 'best_fit':
+        return decode_best_fit(individual, items)
+    if decoder_mode == 'length_priority':
+        return decode_with_length_priority(individual, items)
+    if decoder_mode == 'stage_based':
+        return decode_stage_based(individual, items)
+    if decoder_mode == 'pattern_guided':
+        return decode_pattern_guided(individual, items)
+    if decoder_mode == 'hybrid':
+        return decode_hybrid(individual, items)
+
+    raise ValueError(f"未知解码模式: {decoder_mode}")
+
+
+def calculate_fitness(individual, items, decoder_mode=None):
     """
     计算适应度（越小越好）
     
     参数:
         individual: list of int，染色体
         items: list of Item，所有小板列表
-        use_hybrid: bool，是否使用混合解码器
+        decoder_mode: str，解码模式
     
     返回:
         fitness: float，适应度值（总长度 + 惩罚）
     """
-    if use_hybrid:
-        total_length, strips, penalty = decode_hybrid(individual, items)
-    else:
-        total_length, strips, penalty = decode(individual, items)
+    total_length, strips, penalty = decode_by_mode(individual, items, decoder_mode)
     fitness = total_length + penalty
     return fitness
 
@@ -568,7 +877,7 @@ if __name__ == "__main__":
     random.shuffle(individual)
     
     # 解码
-    total_length, strips, penalty = decode(individual, items)
+    total_length, strips, penalty = decode_by_mode(individual, items)
     efficiency = calculate_efficiency(total_length, items)
     
     print(f"\n随机方案结果:")

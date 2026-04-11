@@ -6,9 +6,9 @@
 import sys
 sys.path.append('D:/A-myprofile/zudao')
 
-from config import SCALE_FACTOR, PANEL_WIDTH
+from config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE
 from data_loader import expand_demand
-from ga_engine import GeneticAlgorithm
+from ga_engine_fast import GeneticAlgorithm
 from decoder import merge_same_pattern_strips
 import pandas as pd
 
@@ -29,6 +29,7 @@ demand_df = pd.DataFrame(demand)
 print('\n原始需求 (5种产品):')
 print(demand_df)
 print(f'\n缩放因子: {SCALE_FACTOR}')
+print(f'解码模式: {DECODER_MODE}')
 sys.stdout.flush()
 
 # 展开需求
@@ -40,11 +41,11 @@ sys.stdout.flush()
 # 运行遗传算法
 ga = GeneticAlgorithm(
     items, 
-    population_size=80,        # 适中种群
-    max_generations=200,       # 足够迭代
+    population_size=24,        # 快速模式
+    max_generations=60,        # 快速模式
     crossover_rate=0.85,
-    mutation_rate=0.25,
-    elite_size=5
+    mutation_rate=0.22,
+    elite_size=3
 )
 best_individual, best_fitness = ga.evolve(verbose=True)
 
@@ -64,9 +65,9 @@ print('=' * 60)
 print(f'还原后总切割长度: {real_total_length:.0f} mm')
 print(f'还原后切割条数: {solution["num_strips"] * SCALE_FACTOR}')
 print(f'材料利用率: {real_efficiency:.2f}%')
-print(f'需求总面积: {total_area_demand:,.0f} mm²')
-print(f'实际使用面积: {total_area_used:,.0f} mm²')
-print(f'浪费面积: {total_area_used - total_area_demand:,.0f} mm²')
+print(f'需求总面积: {total_area_demand:,.0f} mm^2')
+print(f'实际使用面积: {total_area_used:,.0f} mm^2')
+print(f'浪费面积: {total_area_used - total_area_demand:,.0f} mm^2')
 
 # 合并相同模式
 merged, counts = merge_same_pattern_strips(solution['strips'])

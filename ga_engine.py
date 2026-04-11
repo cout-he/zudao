@@ -7,9 +7,11 @@ import random
 import time
 from config import (
     POPULATION_SIZE, MAX_GENERATIONS, 
-    CROSSOVER_RATE, MUTATION_RATE, ELITE_SIZE, RANDOM_SEED
+    CROSSOVER_RATE, MUTATION_RATE, ELITE_SIZE, RANDOM_SEED,
+    DECODER_MODE, ENABLE_LOCAL_SEARCH, LOCAL_SEARCH_INTERVAL,
+    LOCAL_SEARCH_STEPS, FINAL_LOCAL_SEARCH_ROUNDS, EARLY_STOPPING_PATIENCE
 )
-from decoder import calculate_fitness, decode, decode_hybrid, calculate_efficiency
+from decoder import calculate_fitness, decode_by_mode, calculate_efficiency
 from genetic_operators import tournament_selection, crossover, mutate
 
 
@@ -20,7 +22,8 @@ class GeneticAlgorithm:
                  max_generations=MAX_GENERATIONS,
                  crossover_rate=CROSSOVER_RATE,
                  mutation_rate=MUTATION_RATE,
-                 elite_size=ELITE_SIZE):
+                 elite_size=ELITE_SIZE,
+                 decoder_mode=DECODER_MODE):
         """
         初始化遗传算法
         
@@ -39,6 +42,7 @@ class GeneticAlgorithm:
         self.crossover_rate = crossover_rate
         self.mutation_rate = mutation_rate
         self.elite_size = elite_size
+        self.decoder_mode = decoder_mode
         
         # 记录进化历史
         self.history = {
@@ -137,7 +141,7 @@ class GeneticAlgorithm:
         """
         fitness_values = []
         for individual in population:
-            fitness = calculate_fitness(individual, self.items)
+            fitness = calculate_fitness(individual, self.items, self.decoder_mode)
             fitness_values.append(fitness)
         return fitness_values
     
@@ -146,7 +150,7 @@ class GeneticAlgorithm:
         2-opt局部搜索：尝试交换片段来改进解
         """
         best = individual.copy()
-        best_fitness = calculate_fitness(best, self.items)
+        best_fitness = calculate_fitness(best, self.items, self.decoder_mode)
         improved = True
         iterations = 0
         
@@ -165,7 +169,7 @@ class GeneticAlgorithm:
                     new_individual = best.copy()
                     new_individual[i:j+1] = reversed(new_individual[i:j+1])
                     
-                    new_fitness = calculate_fitness(new_individual, self.items)
+                    new_fitness = calculate_fitness(new_individual, self.items, self.decoder_mode)
                     if new_fitness < best_fitness:
                         best = new_individual
                         best_fitness = new_fitness
@@ -181,7 +185,7 @@ class GeneticAlgorithm:
         交换局部搜索：尝试交换不同类型的板子位置
         """
         best = individual.copy()
-        best_fitness = calculate_fitness(best, self.items)
+        best_fitness = calculate_fitness(best, self.items, self.decoder_mode)
         
         for _ in range(max_iterations):
             # 随机选择两个不同类型的位置交换
@@ -191,7 +195,7 @@ class GeneticAlgorithm:
                 new_individual = best.copy()
                 new_individual[i], new_individual[j] = new_individual[j], new_individual[i]
                 
-                new_fitness = calculate_fitness(new_individual, self.items)
+                new_fitness = calculate_fitness(new_individual, self.items, self.decoder_mode)
                 if new_fitness < best_fitness:
                     best = new_individual
                     best_fitness = new_fitness
@@ -203,7 +207,7 @@ class GeneticAlgorithm:
         块移动局部搜索：尝试移动一块连续的板子到其他位置
         """
         best = individual.copy()
-        best_fitness = calculate_fitness(best, self.items)
+        best_fitness = calculate_fitness(best, self.items, self.decoder_mode)
         
         for _ in range(max_iterations):
             # 随机选择一个块
@@ -222,7 +226,7 @@ class GeneticAlgorithm:
                     new_pos -= block_size
                 new_individual[new_pos:new_pos] = block
                 
-                new_fitness = calculate_fitness(new_individual, self.items)
+                new_fitness = calculate_fitness(new_individual, self.items, self.decoder_mode)
                 if new_fitness < best_fitness:
                     best = new_individual
                     best_fitness = new_fitness
@@ -252,6 +256,7 @@ class GeneticAlgorithm:
         best_idx = fitness_values.index(min(fitness_values))
         best_individual = population[best_idx].copy()
         best_fitness = fitness_values[best_idx]
+        stagnant_generations = 0
         
         if verbose:
             print(f"初始最优适应度: {best_fitness:.2f}")
@@ -299,6 +304,9 @@ class GeneticAlgorithm:
             if gen_best_fitness < best_fitness:
                 best_fitness = gen_best_fitness
                 best_individual = population[gen_best_idx].copy()
+                stagnant_generations = 0
+            else:
+                stagnant_generations += 1
             
             # 每隔一定代数进行局部搜索优化最优个体
             if (generation + 1) % 20 == 0:

@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import itertools
 import matplotlib.pyplot as plt
-import squarify
 import matplotlib as mpl
 import matplotlib.patches as patches
 import matplotlib.font_manager as fm
