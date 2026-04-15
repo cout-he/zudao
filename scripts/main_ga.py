@@ -1,198 +1,250 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-遗传算法求解钢板切割优化问题 - 主程序入口
+交互式 GA 入口：
+1 -> simple
+2 -> best_fit
+3 -> stage_based
+4 -> 三种模式全部运行，仅输出利用率最高的方案
 """
 
 import sys
 from pathlib import Path
 
-# 添加当前目录到路径
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.config import (
-    POPULATION_SIZE, MAX_GENERATIONS, 
-    CROSSOVER_RATE, MUTATION_RATE, PANEL_WIDTH, MIN_CUT_GAP, SCALE_FACTOR,
-    DECODER_MODE, OUTPUT_DIR
-)
-from core.data_loader import load_demand_from_excel, expand_demand
-from core.ga_engine_fast import GeneticAlgorithm
-from core.decoder import decode, calculate_efficiency, get_cutting_plan, merge_same_pattern_strips
-from core.visualization import (
-    plot_compact_cutting_plan, plot_evolution_history,
-    plot_stage_based_cutting_plan,
-    plot_strip_details, print_solution_summary
+from core.config import (  # noqa: E402
+    CROSSOVER_RATE,
+    DEFAULT_DATA_FILE,
+    ELITE_SIZE,
+    MAX_GENERATIONS,
+    MUTATION_RATE,
+    OUTPUT_DIR,
+    PANEL_WIDTH,
+    POPULATION_SIZE,
+    SCALE_FACTOR,
 )
 
-import pandas as pd
+MODE_MENU = {
+    "1": "simple",
+    "2": "best_fit",
+    "3": "stage_based",
+    "4": "all",
+}
+
+ALL_DECODER_MODES = ["simple", "best_fit", "stage_based"]
 
 
-def main():
-    """主函数"""
-    print("=" * 60)
-    print("       遗传算法求解钢板切割优化问题")
-    print("=" * 60)
-    
-    # 打印配置参数
-    print("\n【算法参数】")
-    print(f"  大板宽度: {PANEL_WIDTH} mm")
-    print(f"  最小纵切距离: {MIN_CUT_GAP} mm")
-    print(f"  种群大小: {POPULATION_SIZE}")
-    print(f"  最大迭代代数: {MAX_GENERATIONS}")
-    print(f"  交叉概率: {CROSSOVER_RATE}")
-    print(f"  变异概率: {MUTATION_RATE}")
-    print(f"  数据缩放因子: {SCALE_FACTOR}")
-    print(f"  解码模式: {DECODER_MODE}")
-    if SCALE_FACTOR > 1:
-        print(f"  (每{SCALE_FACTOR}个同类板编码为1个，最后结果×{SCALE_FACTOR})")
-    print("-" * 60)
-    
-    # 获取用户输入
+def load_runtime_modules():
     try:
-        sheet_num = int(input("\n请输入产品数据表编号: "))
-    except ValueError:
-        print("输入无效，使用默认值 1")
-        sheet_num = 1
-    
-    # 加载数据
-    print("\n【加载数据】")
-    try:
-        demand = load_demand_from_excel(sheet_num=sheet_num)
-    except Exception as e:
-        print(f"数据加载失败: {e}")
-        return
-    
-    # 显示原始需求
-    demand_df = pd.DataFrame(demand)
-    print("\n原始需求:")
-    print(demand_df.to_string(index=True))
-    
-    total_original = sum(demand['num'])
-    print(f"\n原始小板总数: {total_original}")
-    
-    # 展开需求
-    items, type_info = expand_demand(demand)
-    print(f"缩放后编码的小板数: {len(items)}")
-    
-    # 检查数据量
-    if len(items) > 3000:
-        print(f"\n警告: 小板数量较多({len(items)})，建议在config.py中增大SCALE_FACTOR")
-        continue_flag = input("是否继续? (y/n): ")
-        if continue_flag.lower() != 'y':
-            return
-    
-    # 创建遗传算法实例
-    print("\n【开始遗传算法优化】")
-    ga = GeneticAlgorithm(
+        from core.cutting_report import write_cutting_report
+        from core.data_loader import expand_demand, load_demand_from_excel
+        from core.decoder import merge_same_pattern_strips
+        from core.ga_engine_fast import GeneticAlgorithm
+        from core.visualization import (
+            plot_compact_cutting_plan,
+            plot_stage_based_cutting_plan,
+        )
+    except ModuleNotFoundError as exc:
+        missing_module = exc.name or "未知模块"
+        print("运行失败：当前 Python 解释器缺少项目依赖。")
+        print(f"缺少模块: {missing_module}")
+        print(f"当前解释器: {sys.executable}")
+        print("")
+        print("可选处理方式：")
+        print("1. 改用你当前已装好依赖的环境来运行。")
+        print("2. 在这个解释器里安装依赖，例如：")
+        print(
+            f'   "{sys.executable}" -m pip install pandas openpyxl matplotlib numpy'
+        )
+        raise SystemExit(1) from exc
+
+    return {
+        "write_cutting_report": write_cutting_report,
+        "expand_demand": expand_demand,
+        "load_demand_from_excel": load_demand_from_excel,
+        "merge_same_pattern_strips": merge_same_pattern_strips,
+        "GeneticAlgorithm": GeneticAlgorithm,
+        "plot_compact_cutting_plan": plot_compact_cutting_plan,
+        "plot_stage_based_cutting_plan": plot_stage_based_cutting_plan,
+    }
+
+
+def prompt_decoder_choice():
+    print("=" * 60)
+    print("遗传算法排样求解")
+    print("=" * 60)
+    print("请选择解码方式：")
+    print("1. simple")
+    print("2. best_fit")
+    print("3. stage_based")
+    print("4. 三种模式都跑一遍，仅输出利用率最高的方案")
+
+    while True:
+        choice = input("请输入 1 / 2 / 3 / 4: ").strip()
+        if choice in MODE_MENU:
+            return MODE_MENU[choice]
+        print("输入无效，请重新输入。")
+
+
+def prompt_sheet_num():
+    while True:
+        raw = input("请输入产品数据表编号: ").strip()
+        try:
+            sheet_num = int(raw)
+            if sheet_num <= 0:
+                raise ValueError
+            return sheet_num
+        except ValueError:
+            print("数据表编号必须是正整数，请重新输入。")
+
+
+def calculate_real_efficiency(demand, encoded_total_length):
+    total_demand_area = sum(
+        width * length * num
+        for width, length, num in zip(demand["Width"], demand["Length"], demand["num"])
+    )
+    real_total_length = encoded_total_length * SCALE_FACTOR
+    total_panel_area = PANEL_WIDTH * real_total_length
+    if total_panel_area <= 0:
+        return 0.0, 0
+    return 100 * total_demand_area / total_panel_area, real_total_length
+
+
+def run_single_mode(items, demand, decoder_mode, runtime):
+    ga = runtime["GeneticAlgorithm"](
         items,
         population_size=POPULATION_SIZE,
         max_generations=MAX_GENERATIONS,
         crossover_rate=CROSSOVER_RATE,
-        mutation_rate=MUTATION_RATE
+        mutation_rate=MUTATION_RATE,
+        elite_size=ELITE_SIZE,
+        decoder_mode=decoder_mode,
     )
-    
-    # 运行进化
+
     best_individual, best_fitness = ga.evolve(verbose=True)
-    
-    # 获取最终解决方案
-    solution = ga.get_solution()
-    
-    # 还原真实长度（考虑缩放）
-    real_total_length = solution['total_length'] * SCALE_FACTOR
-    
-    # 打印结果摘要
-    print("\n" + "=" * 60)
-    print("                   优化结果")
-    print("=" * 60)
-    
-    # 合并相同模式的条
-    merged_strips, repeat_counts = merge_same_pattern_strips(solution['strips'])
-    
-    print(f"\n【切割方案摘要】")
-    print(f"  编码后总切割长度: {solution['total_length']:.0f} mm")
-    print(f"  还原后总切割长度: {real_total_length:.0f} mm")
-    print(f"  编码后切割条数: {solution['num_strips']}")
-    print(f"  还原后切割条数: {solution['num_strips'] * SCALE_FACTOR}")
-    print(f"  合并后不同模式数: {len(merged_strips)}")
-    
-    # 计算真实效率
-    total_area_demand = (demand_df['Width'] * demand_df['Length'] * demand_df['num']).sum()
-    total_area_used = PANEL_WIDTH * real_total_length
-    real_efficiency = 100 * total_area_demand / total_area_used
-    
-    print(f"\n【材料使用统计】")
-    print(f"  需求总面积: {total_area_demand:,.0f} mm²")
-    print(f"  实际使用面积: {total_area_used:,.0f} mm²")
-    print(f"  浪费面积: {total_area_used - total_area_demand:,.0f} mm²")
-    print(f"  材料利用率: {real_efficiency:.2f}%")
-    
-    # 打印合并后的切割模式
-    print(f"\n【切割模式详情】（共{len(merged_strips)}种模式）")
-    print("-" * 60)
-    
-    for i, (strip, count) in enumerate(zip(merged_strips, repeat_counts)):
-        # 统计各类型数量
-        type_counts = {}
-        for item in strip.items:
-            type_id = item.type_id
-            if type_id not in type_counts:
-                type_counts[type_id] = 0
-            type_counts[type_id] += 1
-        
-        type_str = ", ".join([f"T{k+1}×{v}" for k, v in sorted(type_counts.items())])
-        real_count = count * SCALE_FACTOR
-        
-        print(f"模式{i+1}: 重复{real_count}次, 长度={strip.strip_length}mm, "
-              f"宽度={strip.used_width}mm")
-        print(f"        组成: {type_str}")
-    
-    print("=" * 60)
-    
-    # 可视化
-    print("\n【生成可视化图表】")
-    
-    # 绘制进化曲线
-    plot_evolution_history(
-        ga.history,
-        save_path=OUTPUT_DIR / 'ga_fast_evolution_history.png',
-        show=False
+    solution = ga.get_solution(best_individual)
+    real_efficiency, real_total_length = calculate_real_efficiency(
+        demand, solution["total_length"]
     )
-    
-    # 绘制切割方案（只绘制不同的模式）
-    max_strips_to_plot = min(20, len(merged_strips))
-    if len(merged_strips) > max_strips_to_plot:
-        print(f"切割模式较多，仅绘制前{max_strips_to_plot}种")
-    
-    if DECODER_MODE.lower() == 'stage_based':
-        plot_stage_based_cutting_plan(
-            solution['strips'],
-            real_efficiency,
-            save_path=OUTPUT_DIR / 'ga_fast_cutting_plan.png',
-            show=False
+
+    return {
+        "decoder_mode": decoder_mode,
+        "best_fitness": best_fitness,
+        "solution": solution,
+        "real_efficiency": real_efficiency,
+        "real_total_length": real_total_length,
+    }
+
+
+def print_mode_result(result):
+    solution = result["solution"]
+    print("-" * 60)
+    print(f"解码方式: {result['decoder_mode']}")
+    print(f"编码总长度: {solution['total_length']:.0f} mm")
+    print(f"还原总长度: {result['real_total_length']:.0f} mm")
+    print(f"材料利用率: {result['real_efficiency']:.2f}%")
+    print(f"条带/阶段数: {solution['num_strips']}")
+    print(f"惩罚值: {solution['penalty']}")
+
+
+def save_outputs(sheet_num, demand, result, runtime):
+    decoder_mode = result["decoder_mode"]
+    solution = result["solution"]
+    efficiency = result["real_efficiency"]
+
+    image_path = OUTPUT_DIR / f"sheet{sheet_num}_{decoder_mode}_cutting_plan.png"
+    report_path = OUTPUT_DIR / f"sheet{sheet_num}_{decoder_mode}_cutting_report.txt"
+
+    if decoder_mode == "stage_based":
+        runtime["plot_stage_based_cutting_plan"](
+            solution["strips"],
+            efficiency,
+            save_path=image_path,
+            show=False,
         )
     else:
-        plot_compact_cutting_plan(
-            merged_strips[:max_strips_to_plot],
-            repeat_counts[:max_strips_to_plot],
-            real_efficiency,
-            save_path=OUTPUT_DIR / 'ga_fast_cutting_plan.png',
-            show=False
+        merged_strips, repeat_counts = runtime["merge_same_pattern_strips"](solution["strips"])
+        runtime["plot_compact_cutting_plan"](
+            merged_strips,
+            repeat_counts,
+            efficiency,
+            save_path=image_path,
+            show=False,
         )
-    
-    # 绘制详细信息
-    plot_strip_details(
-        merged_strips,
-        type_info,
-        save_path=OUTPUT_DIR / 'ga_fast_strip_details.png',
-        show=False
+
+    runtime["write_cutting_report"](
+        sheet_num=sheet_num,
+        decoder_mode=decoder_mode,
+        demand=demand,
+        solution=solution,
+        output_path=report_path,
     )
-    
-    print("\n优化完成!")
+
+    return image_path, report_path
+
+
+def choose_best_result(results):
+    return max(
+        results,
+        key=lambda item: (
+            item["real_efficiency"],
+            -item["real_total_length"],
+            -item["solution"]["penalty"],
+        ),
+    )
+
+
+def main():
+    runtime = load_runtime_modules()
+    decoder_choice = prompt_decoder_choice()
+    sheet_num = prompt_sheet_num()
+
+    print("\n正在加载数据...")
+    try:
+        demand = runtime["load_demand_from_excel"](
+            filepath=DEFAULT_DATA_FILE, sheet_num=sheet_num
+        )
+    except Exception as exc:
+        print(f"数据加载失败: {exc}")
+        return
+
+    items, _ = runtime["expand_demand"](demand)
+    print(f"已加载 Sheet{sheet_num}，编码后个体数: {len(items)}")
+
+    if decoder_choice == "all":
+        print("\n开始依次运行 3 种解码方式...\n")
+        all_results = []
+        for decoder_mode in ALL_DECODER_MODES:
+            print(f"[运行中] {decoder_mode}")
+            result = run_single_mode(items, demand, decoder_mode, runtime)
+            all_results.append(result)
+            print_mode_result(result)
+
+        best_result = choose_best_result(all_results)
+        image_path, report_path = save_outputs(sheet_num, demand, best_result, runtime)
+
+        print("\n" + "=" * 60)
+        print("三种模式运行完成，已输出利用率最高的方案")
+        print("=" * 60)
+        print(f"最佳解码方式: {best_result['decoder_mode']}")
+        print(f"最佳利用率: {best_result['real_efficiency']:.2f}%")
+        print(f"排版图: {image_path}")
+        print(f"切割报告: {report_path}")
+        return
+
+    print(f"\n开始运行解码方式: {decoder_choice}\n")
+    result = run_single_mode(items, demand, decoder_choice, runtime)
+    image_path, report_path = save_outputs(sheet_num, demand, result, runtime)
+
+    print("\n" + "=" * 60)
+    print("求解完成")
     print("=" * 60)
-    
-    return solution
+    print_mode_result(result)
+    print(f"排版图: {image_path}")
+    print(f"切割报告: {report_path}")
 
 
-if __name__ == '__main__':
-    solution = main()
+if __name__ == "__main__":
+    main()

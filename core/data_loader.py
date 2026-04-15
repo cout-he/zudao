@@ -3,7 +3,11 @@
 数据加载与预处理模块
 """
 
-import pandas as pd
+try:
+    import pandas as pd
+except ModuleNotFoundError:
+    pd = None
+
 from openpyxl import load_workbook
 from core.config import (
     DEFAULT_DATA_FILE,
@@ -24,6 +28,24 @@ class Item:
     
     def __repr__(self):
         return f"Item(type={self.type_id}, w={self.width}, l={self.length})"
+
+
+class _SimpleColumn:
+    def __init__(self, values):
+        self.iloc = values
+
+
+class SimpleTypeInfo:
+    """Lightweight fallback used when pandas is unavailable."""
+
+    def __init__(self, demand_info):
+        self._data = {key: list(values) for key, values in demand_info.items()}
+
+    def __getitem__(self, key):
+        return _SimpleColumn(self._data[key])
+
+    def __len__(self):
+        return len(self._data.get("Width", []))
 
 
 def load_demand_from_excel(filepath='产品数据.xlsx', sheet_num=1):
@@ -100,7 +122,10 @@ def expand_demand(demand_info):
     items = []
     item_id = 0
     
-    type_info = pd.DataFrame(demand_info)
+    if pd is not None:
+        type_info = pd.DataFrame(demand_info)
+    else:
+        type_info = SimpleTypeInfo(demand_info)
     
     for type_id in range(len(demand_info['Width'])):
         width = demand_info['Width'][type_id]
@@ -138,7 +163,10 @@ if __name__ == "__main__":
     # 测试数据加载
     demand = load_demand_from_excel(sheet_num=1)
     print("原始需求:")
-    print(pd.DataFrame(demand))
+    if pd is not None:
+        print(pd.DataFrame(demand))
+    else:
+        print(demand)
     
     items, type_info = expand_demand(demand)
     print(f"\n展开后的小板数量: {len(items)}")

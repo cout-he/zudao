@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from core.config import SCALE_FACTOR, PANEL_WIDTH, DECODER_MODE, OUTPUT_DIR
+from core.cutting_report import write_cutting_report
 from core.data_loader import expand_demand
 from core.decoder import merge_same_pattern_strips
 from core.ga_engine_fast import GeneticAlgorithm
@@ -124,9 +125,19 @@ def main():
         show=False,
     )
 
+    report_path = OUTPUT_DIR / f"ga_fast_{DECODER_MODE}_cutting_report.txt"
+    write_cutting_report(
+        sheet_num=0,
+        decoder_mode=DECODER_MODE,
+        demand=demand,
+        solution=solution,
+        output_path=report_path,
+    )
+
     print(f"已保存排版图: {GA_FAST_CUTTING_PLAN}")
     print(f"已保存进化曲线: {GA_FAST_EVOLUTION}")
     print(f"已保存条带明细图: {GA_FAST_STRIP_DETAILS}")
+    print(f"已保存切割报告: {report_path}")
     print("=" * 60)
 
     return {
