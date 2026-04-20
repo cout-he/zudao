@@ -14,6 +14,7 @@ from core.config import (
     SCALE_FACTOR,
     MIN_CUT_GAP,
     VERTICAL_CUT_INCLUSIVE,
+    ENFORCE_MIN_CUT_GAP,
 )
 
 
@@ -48,6 +49,19 @@ class SimpleTypeInfo:
         return len(self._data.get("Width", []))
 
 
+def _validate_width_constraint(width, type_label):
+    if width is None or not ENFORCE_MIN_CUT_GAP:
+        return
+    if VERTICAL_CUT_INCLUSIVE and width < MIN_CUT_GAP:
+        raise ValueError(
+            f"{type_label} width {width}mm is smaller than the minimum vertical cut spacing {MIN_CUT_GAP}mm"
+        )
+    if (not VERTICAL_CUT_INCLUSIVE) and width <= MIN_CUT_GAP:
+        raise ValueError(
+            f"{type_label} width {width}mm must be greater than {MIN_CUT_GAP}mm"
+        )
+
+
 def load_demand_from_excel(filepath='产品数据.xlsx', sheet_num=1):
     """
     从Excel文件加载需求数据
@@ -74,15 +88,7 @@ def load_demand_from_excel(filepath='产品数据.xlsx', sheet_num=1):
         length = ws[f'B{i+3}'].value
         num = ws[f'C{i+3}'].value
         weight = ws[f'D{i+3}'].value
-        if width is not None:
-            if VERTICAL_CUT_INCLUSIVE and width < MIN_CUT_GAP:
-                raise ValueError(
-                    f"Type {i + 1} width {width}mm is smaller than the minimum vertical cut spacing {MIN_CUT_GAP}mm"
-                )
-            if (not VERTICAL_CUT_INCLUSIVE) and width <= MIN_CUT_GAP:
-                raise ValueError(
-                    f"Type {i + 1} width {width}mm must be greater than {MIN_CUT_GAP}mm"
-                )
+        _validate_width_constraint(width, f"Type {i + 1}")
         
         if width is None or width <= 0:
             raise ValueError(f"第{i+1}种产品宽度输入不正确")
@@ -132,14 +138,7 @@ def expand_demand(demand_info):
         length = demand_info['Length'][type_id]
         weight = demand_info['Weight'][type_id]
         num = demand_info['num'][type_id]
-        if VERTICAL_CUT_INCLUSIVE and width < MIN_CUT_GAP:
-            raise ValueError(
-                f"Type {type_id + 1} width {width}mm is smaller than the minimum vertical cut spacing {MIN_CUT_GAP}mm"
-            )
-        if (not VERTICAL_CUT_INCLUSIVE) and width <= MIN_CUT_GAP:
-            raise ValueError(
-                f"Type {type_id + 1} width {width}mm must be greater than {MIN_CUT_GAP}mm"
-            )
+        _validate_width_constraint(width, f"Type {type_id + 1}")
         
         # 按比例缩放数量
         scaled_num = max(1, int(num / SCALE_FACTOR))

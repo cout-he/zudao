@@ -38,6 +38,68 @@ def _format_knife_positions(groups):
     return " / ".join(str(pos) for pos in positions)
 
 
+def calculate_produced_totals(decoder_mode, solution):
+    produced_totals = defaultdict(int)
+
+    if decoder_mode == "stage_based":
+        for strip in solution["strips"]:
+            actual_stage_length = strip.strip_length * SCALE_FACTOR
+            groups = _collect_lane_groups(strip)
+            for group in groups:
+                pieces_per_lane = actual_stage_length // group["length"]
+                lane_total = pieces_per_lane * group["lane_count"]
+                produced_totals[group["type_id"]] += int(lane_total)
+    else:
+        merged_strips, repeat_counts = merge_same_pattern_strips(solution["strips"])
+        for strip, repeat_count in zip(merged_strips, repeat_counts):
+            actual_repeat = repeat_count * SCALE_FACTOR
+            groups = _collect_lane_groups(strip)
+            for group in groups:
+                lane_total = actual_repeat * group["lane_count"]
+                produced_totals[group["type_id"]] += int(lane_total)
+
+    return dict(produced_totals)
+
+
+def summarize_production(demand, solution, decoder_mode):
+    produced_totals = calculate_produced_totals(decoder_mode, solution)
+    order_total = sum(int(num) for num in demand["num"])
+    produced_total = sum(int(value) for value in produced_totals.values())
+    shortage_total = 0
+    over_total = 0
+    demand_area = 0.0
+    produced_area = 0.0
+
+    for idx, (width, length, demand_num) in enumerate(
+        zip(demand["Width"], demand["Length"], demand["num"])
+    ):
+        ordered = int(demand_num)
+        produced = int(produced_totals.get(idx, 0))
+        shortage_total += max(ordered - produced, 0)
+        over_total += max(produced - ordered, 0)
+        demand_area += float(width) * float(length) * ordered
+        produced_area += float(width) * float(length) * produced
+
+    real_total_length = float(solution["total_length"]) * SCALE_FACTOR
+    panel_area = PANEL_WIDTH * real_total_length
+    demand_utilization = 100 * demand_area / panel_area if panel_area else 0.0
+    actual_utilization = 100 * produced_area / panel_area if panel_area else 0.0
+
+    return {
+        "produced_totals": produced_totals,
+        "order_total": int(order_total),
+        "produced_total": int(produced_total),
+        "shortage_total": int(shortage_total),
+        "over_total": int(over_total),
+        "demand_area": float(demand_area),
+        "produced_area": float(produced_area),
+        "real_total_length": float(real_total_length),
+        "panel_area": float(panel_area),
+        "demand_utilization": float(demand_utilization),
+        "actual_utilization": float(actual_utilization),
+    }
+
+
 def _format_demand_section(demand):
     lines = ["一、订单信息", ""]
     for idx, (width, length, num) in enumerate(zip(demand["Width"], demand["Length"], demand["num"]), start=1):
@@ -45,15 +107,7 @@ def _format_demand_section(demand):
     return lines
 
 
-def _format_summary_section(sheet_num, decoder_mode, demand, solution):
-    total_area_demand = sum(
-        width * length * num
-        for width, length, num in zip(demand["Width"], demand["Length"], demand["num"])
-    )
-    real_total_length = solution["total_length"] * SCALE_FACTOR
-    total_area_used = PANEL_WIDTH * real_total_length
-    real_efficiency = 100 * total_area_demand / total_area_used if total_area_used else 0.0
-
+def _format_summary_section(sheet_num, decoder_mode, demand, solution, production_summary):
     lines = [
         f"切割报告  Sheet{sheet_num}  解码方式: {decoder_mode}",
         "=" * 72,
@@ -61,8 +115,12 @@ def _format_summary_section(sheet_num, decoder_mode, demand, solution):
         "二、方案总览",
         "",
         f"母板宽度: {PANEL_WIDTH} mm",
-        f"总消耗长度: {int(real_total_length)} mm",
-        f"材料利用率: {real_efficiency:.2f}%",
+        f"总消耗长度: {int(production_summary['real_total_length'])} mm",
+        f"订单总片数: {production_summary['order_total']} 件",
+        f"算法产出总片数: {production_summary['produced_total']} 件",
+        f"补切数: {production_summary['shortage_total']} 件",
+        f"超产数: {production_summary['over_total']} 件",
+        f"真实利用率: {production_summary['actual_utilization']:.2f}%",
         f"编码条带数: {solution['num_strips']}",
         f"还原后条带数/阶段数: {int(solution['num_strips'] * SCALE_FACTOR) if decoder_mode != 'stage_based' else len(solution['strips'])}",
     ]
@@ -178,8 +236,9 @@ def _format_total_section(demand, produced_totals):
 
 
 def build_cutting_report_text(sheet_num, decoder_mode, demand, solution):
+    production_summary = summarize_production(demand, solution, decoder_mode)
     lines = []
-    lines.extend(_format_summary_section(sheet_num, decoder_mode, demand, solution))
+    lines.extend(_format_summary_section(sheet_num, decoder_mode, demand, solution, production_summary))
     lines.append("")
     lines.extend(_format_demand_section(demand))
 
@@ -191,7 +250,7 @@ def build_cutting_report_text(sheet_num, decoder_mode, demand, solution):
 
     lines.extend(detail_lines)
     lines.append("")
-    lines.extend(_format_total_section(demand, produced_totals))
+    lines.extend(_format_total_section(demand, production_summary["produced_totals"]))
     lines.append("")
     return "\n".join(lines)
 

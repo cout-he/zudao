@@ -17,11 +17,13 @@ from core.group_routing import (  # noqa: E402
     export_group_routing_workbook,
     route_adapted_groups,
 )
+from core.config import PANEL_WIDTH_CANDIDATES  # noqa: E402
 from core.production_state_adapter import adapt_production_state_excel  # noqa: E402
 
 
 DEFAULT_INPUT = ROOT_DIR / "data" / "实际生产状态表.xlsx"
 DEFAULT_OUTPUT = ROOT_DIR / "outputs" / "实际生产状态表_分组处理方案.xlsx"
+DEFAULT_PANEL_WIDTHS = ",".join(str(width) for width in PANEL_WIDTH_CANDIDATES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sheet", default=0, help="Sheet 名称或序号，默认第一个 sheet")
     parser.add_argument(
         "--panel-widths",
-        default="1250",
+        default=DEFAULT_PANEL_WIDTHS,
         help="候选母板宽度，使用逗号分隔，例如 1000,1200,1240,1250,1500",
     )
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="输出 Excel 路径")
@@ -79,12 +81,12 @@ def main() -> None:
     )
 
     single_spec_count = int((routing_result.routing_summary["处理方式"] == "单规格直排").sum())
-    multi_spec_count = int((routing_result.routing_summary["处理方式"] == "多规格优化").sum())
+    ga_count = int((routing_result.routing_summary["处理方式"] == "多规格优化").sum())
 
     print(f"输入文件: {input_path}")
     print(f"输出文件: {output_path}")
     print(f"单规格直排分组: {single_spec_count} 组")
-    print(f"多规格待优化分组: {multi_spec_count} 组")
+    print(f"GA待优化分组: {ga_count} 组")
     print(f"单规格直排候选方案: {len(routing_result.single_spec_plans)} 条")
 
 

@@ -19,6 +19,7 @@ from core.config import (
     PENALTY_VALUE,
     DECODER_MODE,
     VERTICAL_CUT_INCLUSIVE,
+    ENFORCE_MIN_CUT_GAP,
     PATTERN_TOP_CANDIDATES,
     PATTERN_MIN_SAVINGS,
 )
@@ -52,6 +53,8 @@ class Strip:
         # 如果条为空，不算有效
         if self.used_width == 0:
             return True
+        if not ENFORCE_MIN_CUT_GAP:
+            return True
         # 检查是否满足最小宽度约束
         return self.used_width >= MIN_CUT_GAP
     
@@ -68,12 +71,16 @@ class Strip:
 
 
 def _item_width_is_valid(width):
+    if not ENFORCE_MIN_CUT_GAP:
+        return True
     if VERTICAL_CUT_INCLUSIVE:
         return width >= MIN_CUT_GAP
     return width > MIN_CUT_GAP
 
 
 def _strip_constraint_penalty(strip):
+    if not ENFORCE_MIN_CUT_GAP:
+        return 0
     penalty = 0
     if strip.used_width > 0 and strip.used_width < MIN_CUT_GAP:
         penalty += PENALTY_VALUE
@@ -241,7 +248,7 @@ def decode_best_fit(individual, items):
                     score = length_waste + length_diff
                 
                 # 能填满宽度是好事
-                if 0 <= remain_width < MIN_CUT_GAP:
+                if ENFORCE_MIN_CUT_GAP and 0 <= remain_width < MIN_CUT_GAP:
                     score -= 1000
                 
                 if score < best_score:
@@ -419,7 +426,10 @@ def decode_width_first(individual, items):
                 # 计算放入这个板子的得分（越小越好）
                 # 1. 宽度匹配：剩余宽度越小越好
                 width_left = remain_width - item.width
-                width_score = width_left if width_left >= MIN_CUT_GAP or width_left == 0 else 1000
+                if ENFORCE_MIN_CUT_GAP:
+                    width_score = width_left if width_left >= MIN_CUT_GAP or width_left == 0 else 1000
+                else:
+                    width_score = width_left
                 
                 # 2. 长度匹配：与当前最长板差异越小越好
                 length_diff = abs(item.length - current_strip.strip_length)
@@ -434,7 +444,7 @@ def decode_width_first(individual, items):
                 score = width_score * 2 + length_score
                 
                 # 如果能刚好填满或接近填满，大幅降低得分
-                if width_left < MIN_CUT_GAP:
+                if ENFORCE_MIN_CUT_GAP and width_left < MIN_CUT_GAP:
                     score -= 500
                 
                 if score < best_score:

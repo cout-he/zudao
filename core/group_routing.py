@@ -13,7 +13,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from core.config import PANEL_WIDTH
+from core.config import PANEL_WIDTH, PANEL_WIDTH_CANDIDATES
 from core.production_state_adapter import AdaptedProductionData
 
 
@@ -65,6 +65,7 @@ MULTI_SPEC_COLUMNS = [
     "规格种数",
     "总片数",
     "总重量",
+    "备注",
 ]
 
 
@@ -77,7 +78,7 @@ class GroupRoutingResult:
 
 def _normalize_panel_widths(panel_widths: Iterable[int] | None) -> list[int]:
     if panel_widths is None:
-        panel_widths = [PANEL_WIDTH]
+        panel_widths = PANEL_WIDTH_CANDIDATES or [PANEL_WIDTH]
 
     cleaned: set[int] = set()
     for width in panel_widths:
@@ -230,7 +231,7 @@ def route_adapted_groups(
                 routing_rows.append(
                     {
                         **base_row,
-                        "处理方式": "单规格直排",
+                        "处理方式": "多规格优化",
                         "最优母板宽度": None,
                         "最优朝向": "",
                         "最优横向占宽": None,
@@ -242,7 +243,7 @@ def route_adapted_groups(
                         "总消耗长度": None,
                         "余宽": None,
                         "利用率(%)": None,
-                        "备注": "所有候选母板宽度下都无法直排",
+                        "备注": "单规格在所有候选母板宽度下都无法直排，转入 GA 兜底",
                     }
                 )
             else:
@@ -300,7 +301,10 @@ def route_adapted_groups(
             ignore_index=True,
         )
 
-    multi_spec_groups = grouped.loc[grouped["规格种数"] >= 2, MULTI_SPEC_COLUMNS].copy()
+    multi_spec_groups = routing_summary.loc[
+        routing_summary["处理方式"] == "多规格优化",
+        MULTI_SPEC_COLUMNS,
+    ].copy()
     if multi_spec_groups.empty:
         multi_spec_groups = pd.DataFrame(columns=MULTI_SPEC_COLUMNS)
     else:
@@ -327,6 +331,6 @@ def export_group_routing_workbook(
         adapted_data.grouped_summary.to_excel(writer, sheet_name="按品名厚度分组结果", index=False)
         routing_result.routing_summary.to_excel(writer, sheet_name="分组处理策略", index=False)
         routing_result.single_spec_plans.to_excel(writer, sheet_name="单规格直排候选方案", index=False)
-        routing_result.multi_spec_groups.to_excel(writer, sheet_name="多规格待优化分组", index=False)
+        routing_result.multi_spec_groups.to_excel(writer, sheet_name="GA待优化分组", index=False)
 
     return output_path
