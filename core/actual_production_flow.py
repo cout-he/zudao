@@ -644,6 +644,179 @@ def _build_width_allocation_summary(workflow_summary: pd.DataFrame) -> pd.DataFr
     )
 
 
+def _build_single_spec_report_text(
+    *,
+    group_id: str,
+    name: str,
+    thickness: float,
+    panel_width: float,
+    orientation: str,
+    layout_width: float,
+    layout_length: float,
+    lane_count: int,
+    strip_count: int,
+    order_total: int,
+    produced_total: int,
+    makeup_total: int,
+    over_total: int,
+    consumed_length: float,
+    waste_width: float,
+    utilization: float,
+) -> str:
+    lines = [
+        f"分组编号: {group_id}",
+        f"品名: {name}",
+        f"厚度: {thickness}",
+        "处理方式: 单规格直排",
+        "",
+        "一、订单信息",
+        f"母板宽度: {int(panel_width)} mm",
+        f"排版朝向: {orientation}",
+        f"横向占宽: {int(layout_width)} mm",
+        f"纵向定尺: {int(layout_length)} mm",
+        f"并排道数: {int(lane_count)}",
+        f"纵向段数: {int(strip_count)}",
+        "",
+        "二、执行口径",
+        f"总消耗长度: {int(consumed_length)} mm",
+        f"余宽: {int(waste_width)} mm",
+        f"订单数量: {int(order_total)} 件",
+        f"报告产出: {int(produced_total)} 件",
+        f"补切数: {int(makeup_total)} 件",
+        f"超产数: {int(over_total)} 件",
+        f"真实利用率: {float(utilization):.2f}%",
+        "",
+        "三、切割说明",
+        f"1. 母板宽度方向并排 {int(lane_count)} 道，每道宽 {int(layout_width)} mm。",
+        f"2. 走料方向按定尺 {int(layout_length)} mm 连续切 {int(strip_count)} 段。",
+        f"3. 本组总走料长度为 {int(consumed_length)} mm，余宽 {int(waste_width)} mm。",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _save_single_spec_outputs(
+    *,
+    group_id: str,
+    name: str,
+    thickness: float,
+    panel_width: float,
+    orientation: str,
+    layout_width: float,
+    layout_length: float,
+    lane_count: int,
+    strip_count: int,
+    order_total: int,
+    produced_total: int,
+    makeup_total: int,
+    over_total: int,
+    consumed_length: float,
+    waste_width: float,
+    utilization: float,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    plt.rcParams["font.sans-serif"] = ["SimHei"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = output_dir / f"{group_id}_single_spec_cutting_plan.png"
+    report_path = output_dir / f"{group_id}_single_spec_cutting_report.txt"
+
+    total_length = max(float(consumed_length), 1.0)
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    scale_y = 10.0 / max(float(panel_width), 1.0)
+    scale_x = 18.0 / total_length
+
+    bg_rect = patches.Rectangle(
+        (0, 0),
+        total_length * scale_x,
+        panel_width * scale_y,
+        linewidth=1.5,
+        edgecolor="black",
+        facecolor="#efefef",
+    )
+    ax.add_patch(bg_rect)
+
+    y_cursor = 0.0
+    for lane_idx in range(int(lane_count)):
+        lane_rect = patches.Rectangle(
+            (0, y_cursor),
+            total_length * scale_x,
+            layout_width * scale_y,
+            linewidth=1.0,
+            edgecolor="black",
+            facecolor="#8ecae6",
+            alpha=0.9,
+        )
+        ax.add_patch(lane_rect)
+        ax.text(
+            total_length * scale_x / 2,
+            y_cursor + layout_width * scale_y / 2,
+            f"Lane {lane_idx + 1}\n{int(layout_width)} x {int(layout_length)}\n{int(strip_count)} pcs/lane",
+            ha="center",
+            va="center",
+            fontsize=8,
+        )
+        y_cursor += layout_width * scale_y
+
+    if waste_width > 0:
+        waste_rect = patches.Rectangle(
+            (0, y_cursor),
+            total_length * scale_x,
+            waste_width * scale_y,
+            linewidth=1.0,
+            edgecolor="black",
+            facecolor="#f4a261",
+            alpha=0.7,
+        )
+        ax.add_patch(waste_rect)
+        ax.text(
+            total_length * scale_x / 2,
+            y_cursor + waste_width * scale_y / 2,
+            f"余宽 {int(waste_width)} mm",
+            ha="center",
+            va="center",
+            fontsize=8,
+        )
+
+    ax.set_title(
+        f"{group_id} 单规格直排 | 母板{int(panel_width)} | 产出{int(produced_total)} | 利用率{float(utilization):.2f}%",
+        fontsize=11,
+    )
+    ax.set_xlim(-0.5, total_length * scale_x + 0.5)
+    ax.set_ylim(0, panel_width * scale_y + 0.8)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(image_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+    report_path.write_text(
+        _build_single_spec_report_text(
+            group_id=group_id,
+            name=name,
+            thickness=thickness,
+            panel_width=panel_width,
+            orientation=orientation,
+            layout_width=layout_width,
+            layout_length=layout_length,
+            lane_count=lane_count,
+            strip_count=strip_count,
+            order_total=order_total,
+            produced_total=produced_total,
+            makeup_total=makeup_total,
+            over_total=over_total,
+            consumed_length=consumed_length,
+            waste_width=waste_width,
+            utilization=utilization,
+        ),
+        encoding="utf-8",
+    )
+
+    return image_path, report_path
+
+
 def execute_actual_production_workflow(
     adapted_data: AdaptedProductionData,
     routing_result: GroupRoutingResult,
@@ -1008,6 +1181,32 @@ def execute_actual_production_workflow(
         group_id = group_row[route_group_id_col]
 
         if pd.notna(group_row[route_output_total_col]):
+            single_spec_output_dir = output_dir / f"width_{int(group_row[route_panel_width_col])}"
+            image_path, report_path = _save_single_spec_outputs(
+                group_id=str(group_row[route_group_id_col]),
+                name=str(group_row[route_name_col]),
+                thickness=float(group_row[route_thickness_col]),
+                panel_width=float(group_row[route_panel_width_col]),
+                orientation=str(group_row[route_layout_note_col]),
+                layout_width=float(group_row[route_layout_width_col]),
+                layout_length=float(group_row[route_layout_length_col]),
+                lane_count=int(group_row[route_strip_lane_col]),
+                strip_count=int(group_row[route_strip_count_col]),
+                order_total=int(group_row[route_order_total_col]),
+                produced_total=int(group_row[route_output_total_col]),
+                makeup_total=max(
+                    int(group_row[route_order_total_col]) - int(group_row[route_output_total_col]),
+                    0,
+                ),
+                over_total=max(
+                    int(group_row[route_output_total_col]) - int(group_row[route_order_total_col]),
+                    0,
+                ),
+                consumed_length=float(group_row[route_consumed_length_col]),
+                waste_width=float(group_row[route_waste_width_col]),
+                utilization=float(group_row[route_utilization_col]),
+                output_dir=single_spec_output_dir,
+            )
             workflow_rows.append(
                 {
                     WF_GROUP_ID_COL: group_row[route_group_id_col],
@@ -1046,8 +1245,8 @@ def execute_actual_production_workflow(
                         else 0.0
                     ),
                     WF_STRIP_COUNT_COL: group_row[route_strip_count_col],
-                    WF_IMAGE_PATH_COL: "",
-                    WF_REPORT_PATH_COL: "",
+                    WF_IMAGE_PATH_COL: str(image_path),
+                    WF_REPORT_PATH_COL: str(report_path),
                     WF_NOTE_COL: group_row[route_note_col],
                 }
             )
