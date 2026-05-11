@@ -12,6 +12,7 @@ Current scope:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +37,8 @@ from core.config import (
 from core.group_routing import GroupRoutingResult
 from core.production_state_adapter import AdaptedProductionData
 
+
+MULTI_SPEC_ROTATION_SPEC_LIMIT = 2
 
 WORKFLOW_SUMMARY_COLUMNS = [
     "分组编号",
@@ -360,13 +363,121 @@ def attach_business_decisions(workflow_summary: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def build_demand_from_group_detail(group_detail: pd.DataFrame) -> dict:
+def _build_orientation_note(orientation_choices: dict[str, dict] | None) -> str:
+    if not orientation_choices:
+        return "短边横放"
+    return "；".join(
+        f"{spec}:{choice['orientation']}"
+        for spec, choice in sorted(orientation_choices.items())
+    )
+
+
+def _build_multi_spec_orientation_candidates(
+    group_detail: pd.DataFrame,
+    panel_width: int,
+) -> list[dict]:
     detail = group_detail.sort_values(["短边", "长边", "标准规格"], ignore_index=True)
+    spec_count = int(detail["标准规格"].nunique())
+
+    if spec_count != MULTI_SPEC_ROTATION_SPEC_LIMIT:
+        return [
+            {
+                "orientation_choices": None,
+                "orientation_note": "短边横放",
+                "rotation_enabled": False,
+            }
+        ]
+
+    per_spec_candidates: list[list[dict]] = []
+    for row in detail.to_dict(orient="records"):
+        spec = str(row["标准规格"])
+        short_side = float(row["短边"])
+        long_side = float(row["长边"])
+        candidates = []
+
+        if short_side <= float(panel_width):
+            candidates.append(
+                {
+                    "spec": spec,
+                    "width": short_side,
+                    "length": long_side,
+                    "orientation": "短边横放",
+                }
+            )
+
+        if long_side <= float(panel_width) and (long_side, short_side) != (short_side, long_side):
+            candidates.append(
+                {
+                    "spec": spec,
+                    "width": long_side,
+                    "length": short_side,
+                    "orientation": "长边横放",
+                }
+            )
+
+        if not candidates:
+            raise ValueError(
+                f"当前母板宽度 {panel_width} mm 下规格 {spec} 两个朝向均无法放入"
+            )
+        per_spec_candidates.append(candidates)
+
+    orientation_candidates = []
+    seen_keys: set[tuple] = set()
+    for combo in product(*per_spec_candidates):
+        key = tuple(
+            (choice["spec"], float(choice["width"]), float(choice["length"]))
+            for choice in combo
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        orientation_choices = {choice["spec"]: choice for choice in combo}
+        orientation_candidates.append(
+            {
+                "orientation_choices": orientation_choices,
+                "orientation_note": _build_orientation_note(orientation_choices),
+                "rotation_enabled": True,
+            }
+        )
+
+    return orientation_candidates
+
+
+def build_demand_from_group_detail(
+    group_detail: pd.DataFrame,
+    orientation_choices: dict[str, dict] | None = None,
+) -> dict:
+    detail = group_detail.sort_values(["短边", "长边", "标准规格"], ignore_index=True)
+    widths = []
+    lengths = []
+    orientations = []
+    specs = []
+
+    for row in detail.to_dict(orient="records"):
+        spec = str(row["标准规格"])
+        choice = (orientation_choices or {}).get(spec)
+        if choice is None:
+            width = float(row["短边"])
+            length = float(row["长边"])
+            orientation = "短边横放"
+        else:
+            width = float(choice["width"])
+            length = float(choice["length"])
+            orientation = str(choice["orientation"])
+        widths.append(width)
+        lengths.append(length)
+        orientations.append(orientation)
+        specs.append(spec)
+
     return {
-        "Width": [float(value) for value in detail["短边"]],
-        "Length": [float(value) for value in detail["长边"]],
+        "Width": widths,
+        "Length": lengths,
         "num": [int(value) for value in detail["片数"]],
         "Weight": [float(value) for value in detail["重量"]],
+        "Orientation": orientations,
+        "Spec": specs,
+        "Name": str(detail.iloc[0, 1]) if not detail.empty else "",
     }
 
 
@@ -434,6 +545,9 @@ def _save_multi_spec_outputs(
     solution = result["solution"]
     efficiency = result["real_efficiency"]
 
+    # Keep visualization/report generation aligned with the selected panel width.
+    apply_runtime_panel_width(runtime, panel_width)
+
     image_path = output_dir / f"{group_id}_{decoder_mode}_cutting_plan.png"
     report_path = output_dir / f"{group_id}_{decoder_mode}_cutting_report.txt"
 
@@ -472,11 +586,17 @@ def run_multi_spec_group(
     runtime: dict,
     output_dir: Path,
     panel_width: int,
+    save_outputs: bool = True,
+    orientation_choices: dict[str, dict] | None = None,
+    orientation_note: str | None = None,
 ) -> dict:
     if group_detail.empty:
         raise ValueError("分组缺少可排版明细")
 
-    demand = build_demand_from_group_detail(group_detail)
+    demand = build_demand_from_group_detail(
+        group_detail,
+        orientation_choices=orientation_choices,
+    )
     oversize_widths = sorted({int(width) for width in demand["Width"] if float(width) > float(panel_width)})
     if oversize_widths:
         width_text = ", ".join(str(width) for width in oversize_widths)
@@ -515,18 +635,22 @@ def run_multi_spec_group(
         decoder_mode=strategy["decoder_mode"],
     )
 
-    image_path, report_path = _save_multi_spec_outputs(
-        runtime=runtime,
-        group_id=group_row["分组编号"],
-        decoder_mode=strategy["decoder_mode"],
-        demand=demand,
-        result={
-            "solution": solution,
-            "real_efficiency": production_summary["actual_utilization"],
-        },
-        output_dir=output_dir,
-        panel_width=panel_width,
-    )
+    if save_outputs:
+        image_path, report_path = _save_multi_spec_outputs(
+            runtime=runtime,
+            group_id=group_row["分组编号"],
+            decoder_mode=strategy["decoder_mode"],
+            demand=demand,
+            result={
+                "solution": solution,
+                "real_efficiency": production_summary["actual_utilization"],
+            },
+            output_dir=output_dir,
+            panel_width=panel_width,
+        )
+    else:
+        image_path = Path("")
+        report_path = Path("")
 
     if int(group_row["规格种数"]) <= 1:
         result_note = (
@@ -535,6 +659,8 @@ def run_multi_spec_group(
         )
     else:
         result_note = f"按 {strategy['decoder_mode']} 模式完成 GA 求解；{strategy['strategy_note']}"
+    if orientation_note:
+        result_note = f"{result_note}；排版朝向：{orientation_note}"
 
     return {
         "分组编号": group_row["分组编号"],
@@ -559,6 +685,14 @@ def run_multi_spec_group(
         "图像输出": str(image_path),
         "报告输出": str(report_path),
         "备注": result_note,
+        "__orientation_note__": orientation_note or _build_orientation_note(orientation_choices),
+        "__save_context__": {
+            "group_id": group_row["分组编号"],
+            "decoder_mode": strategy["decoder_mode"],
+            "demand": demand,
+            "solution": solution,
+            "real_efficiency": production_summary["actual_utilization"],
+        },
     }
 
 
@@ -659,39 +793,248 @@ def _build_single_spec_report_text(
     produced_total: int,
     makeup_total: int,
     over_total: int,
+    weight_total: float,
     consumed_length: float,
     waste_width: float,
     utilization: float,
 ) -> str:
+    input_weight_tons = float(weight_total) / 1000.0
+    consumed_weight_tons = (
+        float(panel_width)
+        * float(consumed_length)
+        * float(thickness)
+        * 7.85e-9
+    )
+    product_weight_tons = (
+        input_weight_tons * float(produced_total) / float(order_total)
+        if int(order_total) > 0
+        else 0.0
+    )
     lines = [
-        f"分组编号: {group_id}",
-        f"品名: {name}",
-        f"厚度: {thickness}",
-        "处理方式: 单规格直排",
+        "1. 生产任务信息",
+        "项目      内容",
+        f"任务编号    {group_id}",
+        f"品名      {name}",
+        f"母卷规格    {thickness:g} x {int(panel_width)} mm",
+        "输入重量单位  kg，报告已换算为吨",
+        f"订单重量合计  {input_weight_tons:.6f} 吨",
+        f"总走料长度  {float(consumed_length) / 1000.0:.3f} m",
+        f"预计用料重量  {consumed_weight_tons:.6f} 吨",
+        f"面积利用率  {float(utilization):.2f}%",
+        "生产阶段数  1",
         "",
-        "一、订单信息",
-        f"母板宽度: {int(panel_width)} mm",
-        f"排版朝向: {orientation}",
-        f"横向占宽: {int(layout_width)} mm",
-        f"纵向定尺: {int(layout_length)} mm",
-        f"并排道数: {int(lane_count)}",
-        f"纵向段数: {int(strip_count)}",
+        "2. 订单与产出核对",
+        "产品编号 规格 mm              订单数量   本单产出      差异 处理说明",
+        (
+            f"T1     {int(layout_width)} x {int(layout_length):<12} "
+            f"{int(order_total):>8} {int(produced_total):>8} "
+            f"{int(produced_total) - int(order_total):>7} "
+            f"{'与订单一致' if int(produced_total) == int(order_total) else ('需补切 ' + str(int(makeup_total)) + ' 件' if int(makeup_total) > 0 else '多 ' + str(int(over_total)) + ' 件，作为余量')}"
+        ),
         "",
-        "二、执行口径",
-        f"总消耗长度: {int(consumed_length)} mm",
-        f"余宽: {int(waste_width)} mm",
-        f"订单数量: {int(order_total)} 件",
-        f"报告产出: {int(produced_total)} 件",
-        f"补切数: {int(makeup_total)} 件",
-        f"超产数: {int(over_total)} 件",
-        f"真实利用率: {float(utilization):.2f}%",
+        "3. 排刀执行说明",
+        "阶段 1：T1 单规格直排",
+        "项目      内容",
+        f"排刀组合    {' + '.join(str(int(layout_width)) for _ in range(int(lane_count)))}",
+        f"刀数      {int(lane_count)} 道",
+        f"占用宽度    {int(layout_width * lane_count)} mm",
+        f"边部余宽    {int(waste_width)} mm",
+        f"定尺长度    {int(layout_length)} mm",
+        f"走料长度    {float(consumed_length) / 1000.0:.3f} m",
+        f"预计用料重量  {consumed_weight_tons:.6f} 吨",
+        f"每道产出    {int(strip_count)} 件",
+        f"本阶段产出 T1：{int(produced_total)} 件，约 {product_weight_tons:.6f} 吨",
+        f"示意图：母卷宽度 {int(panel_width)} mm | "
+        f"{' | '.join(['T1 ' + str(int(layout_width)) for _ in range(int(lane_count))])}"
+        + (f" | 余宽 {int(waste_width)}" if waste_width > 0 else ""),
         "",
-        "三、切割说明",
-        f"1. 母板宽度方向并排 {int(lane_count)} 道，每道宽 {int(layout_width)} mm。",
-        f"2. 走料方向按定尺 {int(layout_length)} mm 连续切 {int(strip_count)} 段。",
-        f"3. 本组总走料长度为 {int(consumed_length)} mm，余宽 {int(waste_width)} mm。",
+        "4. 换刀与补切提示",
+        "项目   说明",
+        "换刀顺序 按阶段 1 执行",
+        f"补切要求 {'无' if int(makeup_total) == 0 else 'T1 少 ' + str(int(makeup_total)) + ' 件，需要单独补切'}",
+        f"多产说明 {'无' if int(over_total) == 0 else 'T1 多 ' + str(int(over_total)) + ' 件，可作为余量件'}",
+        "注意事项 阶段执行过程中不要随意改变刀位组合",
+        "",
+        "5. 车间确认栏",
+        "项目   签字 / 确认",
+        "排刀确认",
+        "生产确认",
+        "数量核对",
+        "补切确认",
+        "日期",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _write_single_spec_report_xlsx(
+    *,
+    output_path: Path,
+    group_id: str,
+    name: str,
+    thickness: float,
+    panel_width: float,
+    orientation: str,
+    layout_width: float,
+    layout_length: float,
+    lane_count: int,
+    strip_count: int,
+    order_total: int,
+    produced_total: int,
+    makeup_total: int,
+    over_total: int,
+    weight_total: float,
+    consumed_length: float,
+    waste_width: float,
+    utilization: float,
+) -> Path:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    def style_range(ws, cell_range, *, fill=None, bold=False, align="left"):
+        side = Side(style="thin", color="B7B7B7")
+        border = Border(left=side, right=side, top=side, bottom=side)
+        for row_cells in ws[cell_range]:
+            for cell in row_cells:
+                cell.border = border
+                cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+                cell.font = Font(name="Microsoft YaHei", size=10, bold=bold)
+                if fill:
+                    cell.fill = PatternFill("solid", fgColor=fill)
+
+    def section(ws, row, title):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        cell = ws.cell(row=row, column=1, value=title)
+        cell.font = Font(name="Microsoft YaHei", size=12, bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="305496")
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[row].height = 24
+        return row + 1
+
+    def key_value(ws, row, rows):
+        ws.cell(row=row, column=1, value="项目")
+        ws.cell(row=row, column=2, value="内容")
+        style_range(ws, f"A{row}:B{row}", fill="D9EAF7", bold=True, align="center")
+        row += 1
+        start = row
+        for key, value in rows:
+            ws.cell(row=row, column=1, value=key)
+            ws.cell(row=row, column=2, value=value)
+            row += 1
+        style_range(ws, f"A{start}:B{row - 1}")
+        return row + 1
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    input_weight_tons = float(weight_total) / 1000.0
+    consumed_weight_tons = (
+        float(panel_width)
+        * float(consumed_length)
+        * float(thickness)
+        * 7.85e-9
+    )
+    product_weight_tons = (
+        input_weight_tons * float(produced_total) / float(order_total)
+        if int(order_total) > 0
+        else 0.0
+    )
+    gap = int(produced_total) - int(order_total)
+
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "生产指令单"
+    ws.sheet_view.showGridLines = False
+    for column, width in {"A": 14, "B": 34, "C": 14, "D": 14, "E": 14, "F": 34}.items():
+        ws.column_dimensions[column].width = width
+
+    ws.merge_cells("A1:F1")
+    title = ws["A1"]
+    title.value = "钢板纵切生产指令单"
+    title.font = Font(name="Microsoft YaHei", size=16, bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="1F4E78")
+    title.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    row = 3
+    row = section(ws, row, "1. 生产任务信息")
+    row = key_value(
+        ws,
+        row,
+        [
+            ("任务编号", group_id),
+            ("类型", "分条"),
+            ("材料名称", name),
+            ("母卷规格", f"{thickness:g} x {int(panel_width)} mm"),
+            ("输入重量单位", "kg，报告已换算为吨"),
+            ("订单重量合计", f"{input_weight_tons:.6f} 吨"),
+            ("总走料长度", f"{float(consumed_length) / 1000.0:.3f} m"),
+            ("预计用料重量", f"{consumed_weight_tons:.6f} 吨"),
+            ("面积利用率", f"{float(utilization):.2f}%"),
+            ("生产阶段数", 1),
+            ("排版朝向", orientation),
+        ],
+    )
+
+    row = section(ws, row, "2. 订单与产出核对")
+    headers = ["产品编号", "规格 mm", "订单数量", "本单产出", "差异", "处理说明"]
+    for col, header in enumerate(headers, start=1):
+        ws.cell(row=row, column=col, value=header)
+    style_range(ws, f"A{row}:F{row}", fill="D9EAF7", bold=True, align="center")
+    row += 1
+    note = (
+        "与订单一致"
+        if gap == 0
+        else (f"需补切 {int(makeup_total)} 件" if gap < 0 else f"多 {int(over_total)} 件，作为余量")
+    )
+    values = ["T1", f"{int(layout_width)} x {int(layout_length)}", int(order_total), int(produced_total), gap, note]
+    for col, value in enumerate(values, start=1):
+        ws.cell(row=row, column=col, value=value)
+    style_range(ws, f"A{row}:F{row}")
+    style_range(ws, f"C{row}:E{row}", align="right")
+    row += 2
+
+    row = section(ws, row, "3. 排刀执行说明")
+    row = section(ws, row, "阶段 1：T1 单规格直排")
+    row = key_value(
+        ws,
+        row,
+        [
+            ("排刀组合", " + ".join(str(int(layout_width)) for _ in range(int(lane_count)))),
+            ("刀数", f"{int(lane_count)} 道"),
+            ("占用宽度", f"{int(layout_width * lane_count)} mm"),
+            ("边部余宽", f"{int(waste_width)} mm"),
+            ("定尺长度", f"{int(layout_length)} mm"),
+            ("走料长度", f"{float(consumed_length) / 1000.0:.3f} m"),
+            ("预计用料重量", f"{consumed_weight_tons:.6f} 吨"),
+            ("每道产出", f"{int(strip_count)} 件"),
+            ("本阶段产出", f"T1：{int(produced_total)} 件，约 {product_weight_tons:.6f} 吨"),
+            (
+                "示意图",
+                f"母卷宽度 {int(panel_width)} mm | "
+                f"{' | '.join(['T1 ' + str(int(layout_width)) for _ in range(int(lane_count))])}"
+                + (f" | 余宽 {int(waste_width)}" if waste_width > 0 else ""),
+            ),
+        ],
+    )
+
+    row = section(ws, row, "4. 换刀与补切提示")
+    row = key_value(
+        ws,
+        row,
+        [
+            ("换刀顺序", "按阶段 1 执行"),
+            ("补切要求", "无" if int(makeup_total) == 0 else f"T1 少 {int(makeup_total)} 件，需要单独补切"),
+            ("多产说明", "无" if int(over_total) == 0 else f"T1 多 {int(over_total)} 件，可作为余量件"),
+            ("注意事项", "阶段执行过程中不要随意改变刀位组合"),
+        ],
+    )
+
+    row = section(ws, row, "5. 车间确认栏")
+    key_value(ws, row, [("排刀确认", ""), ("生产确认", ""), ("数量核对", ""), ("补切确认", ""), ("日期", "")])
+
+    ws.freeze_panes = "A3"
+    workbook.save(output_path)
+    return output_path
 
 
 def _save_single_spec_outputs(
@@ -709,6 +1052,7 @@ def _save_single_spec_outputs(
     produced_total: int,
     makeup_total: int,
     over_total: int,
+    weight_total: float,
     consumed_length: float,
     waste_width: float,
     utilization: float,
@@ -807,6 +1151,7 @@ def _save_single_spec_outputs(
             produced_total=produced_total,
             makeup_total=makeup_total,
             over_total=over_total,
+            weight_total=weight_total,
             consumed_length=consumed_length,
             waste_width=waste_width,
             utilization=utilization,
@@ -1202,6 +1547,7 @@ def execute_actual_production_workflow(
                     int(group_row[route_output_total_col]) - int(group_row[route_order_total_col]),
                     0,
                 ),
+                weight_total=float(group_row[route_weight_total_col]),
                 consumed_length=float(group_row[route_consumed_length_col]),
                 waste_width=float(group_row[route_waste_width_col]),
                 utilization=float(group_row[route_utilization_col]),
@@ -1269,46 +1615,94 @@ def execute_actual_production_workflow(
         successful_attempts: list[dict] = []
         failed_attempts: list[dict] = []
         for candidate_width in candidate_panel_widths:
-            candidate_output_dir = output_dir / f"width_{candidate_width}"
-            candidate_output_dir.mkdir(parents=True, exist_ok=True)
             try:
                 apply_runtime_panel_width(runtime, candidate_width)
-                attempt_result = run_multi_spec_group(
-                    group_row=group_row,
+                orientation_candidates = _build_multi_spec_orientation_candidates(
                     group_detail=group_detail,
-                    decoder_mode=decoder_mode,
-                    runtime=runtime,
-                    output_dir=candidate_output_dir,
                     panel_width=candidate_width,
                 )
-                successful_attempts.append(
-                    {
-                        "panel_width": candidate_width,
-                        "result": attempt_result,
-                    }
-                )
-                if verbose:
-                    print(
-                        f"  -> {candidate_width} mm 成功: 补切 {attempt_result[MS_MAKEUP_TOTAL_COL]} "
-                        f"超产 {attempt_result[MS_OVER_TOTAL_COL]} 利用率 {attempt_result[MS_UTILIZATION_COL]:.4f}%"
-                    )
             except Exception as exc:
                 failed_attempts.append(
                     {
                         "panel_width": candidate_width,
+                        "orientation_note": "",
                         "error": str(exc),
                     }
                 )
                 if verbose:
                     print(f"  -> {candidate_width} mm 失败: {exc}")
+                continue
+
+            for orientation_candidate in orientation_candidates:
+                try:
+                    attempt_result = run_multi_spec_group(
+                        group_row=group_row,
+                        group_detail=group_detail,
+                        decoder_mode=decoder_mode,
+                        runtime=runtime,
+                        output_dir=output_dir,
+                        panel_width=candidate_width,
+                        save_outputs=False,
+                        orientation_choices=orientation_candidate["orientation_choices"],
+                        orientation_note=orientation_candidate["orientation_note"],
+                    )
+                    successful_attempts.append(
+                        {
+                            "panel_width": candidate_width,
+                            "orientation_note": orientation_candidate["orientation_note"],
+                            "rotation_enabled": orientation_candidate["rotation_enabled"],
+                            "result": attempt_result,
+                        }
+                    )
+                    if verbose:
+                        print(
+                            f"  -> {candidate_width} mm / {orientation_candidate['orientation_note']} 成功: "
+                            f"补切 {attempt_result[MS_MAKEUP_TOTAL_COL]} "
+                            f"超产 {attempt_result[MS_OVER_TOTAL_COL]} 利用率 {attempt_result[MS_UTILIZATION_COL]:.4f}%"
+                        )
+                except Exception as exc:
+                    failed_attempts.append(
+                        {
+                            "panel_width": candidate_width,
+                            "orientation_note": orientation_candidate["orientation_note"],
+                            "error": str(exc),
+                        }
+                    )
+                    if verbose:
+                        print(
+                            f"  -> {candidate_width} mm / {orientation_candidate['orientation_note']} 失败: {exc}"
+                        )
 
         if successful_attempts:
             best_attempt = min(successful_attempts, key=lambda item: _score_multi_spec_result(item["result"]))
             multi_result = best_attempt["result"]
+            best_output_dir = output_dir / f"width_{best_attempt['panel_width']}"
+            best_output_dir.mkdir(parents=True, exist_ok=True)
+            save_context = multi_result.get("__save_context__", {})
+            image_path, report_path = _save_multi_spec_outputs(
+                runtime=runtime,
+                group_id=save_context["group_id"],
+                decoder_mode=save_context["decoder_mode"],
+                demand=save_context["demand"],
+                result={
+                    "solution": save_context["solution"],
+                    "real_efficiency": save_context["real_efficiency"],
+                },
+                output_dir=best_output_dir,
+                panel_width=best_attempt["panel_width"],
+            )
+            multi_result[MS_IMAGE_PATH_COL] = str(image_path)
+            multi_result[MS_REPORT_PATH_COL] = str(report_path)
             attempted_text = ", ".join(str(width) for width in candidate_panel_widths)
+            rotation_text = (
+                "启用，仅规格数=2时枚举可行朝向"
+                if any(attempt.get("rotation_enabled") for attempt in successful_attempts)
+                else "未启用或无可行旋转候选"
+            )
             multi_result[MS_NOTE_COL] = (
                 f"{multi_result[MS_NOTE_COL]}；候选宽度比较：{attempted_text}；"
-                f"选定母板宽度：{best_attempt['panel_width']} mm"
+                f"选定母板宽度：{best_attempt['panel_width']} mm；"
+                f"旋转候选：{rotation_text}；最终朝向：{best_attempt['orientation_note']}"
             )
             multi_spec_rows.append(multi_result)
             workflow_rows.append(
@@ -1323,7 +1717,7 @@ def execute_actual_production_workflow(
                     WF_DECODER_MODE_COL: multi_result[MS_DECODER_MODE_COL],
                     WF_SCALE_FACTOR_COL: multi_result[MS_SCALE_FACTOR_COL],
                     WF_PANEL_WIDTH_COL: multi_result[MS_PANEL_WIDTH_COL],
-                    WF_LAYOUT_NOTE_COL: "",
+                    WF_LAYOUT_NOTE_COL: best_attempt["orientation_note"],
                     WF_ORDER_TOTAL_COL: multi_result[MS_ORDER_TOTAL_COL],
                     WF_PRODUCED_TOTAL_COL: multi_result[MS_PRODUCED_TOTAL_COL],
                     WF_MAKEUP_TOTAL_COL: multi_result[MS_MAKEUP_TOTAL_COL],
