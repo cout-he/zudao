@@ -169,10 +169,45 @@ def _input_weight_to_tons(value, weight_unit):
     return value if weight_unit == "t" else value / 1000.0
 
 
+def _demand_density_t_per_mm3(demand, weight_unit):
+    thickness = _parse_thickness_from_demand(demand)
+    if not thickness:
+        return STEEL_DENSITY_T_PER_MM3
+
+    total_weight_tons = 0.0
+    total_volume_mm3 = 0.0
+    for width, length, count, weight in zip(
+        demand.get("Width", []),
+        demand.get("Length", []),
+        demand.get("num", []),
+        demand.get("Weight", []),
+    ):
+        try:
+            count = int(count)
+            width = float(width)
+            length = float(length)
+            weight_tons = _input_weight_to_tons(weight, weight_unit)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0 or width <= 0 or length <= 0 or weight_tons <= 0:
+            continue
+        total_weight_tons += weight_tons
+        total_volume_mm3 += float(thickness) * width * length * count
+
+    if total_weight_tons <= 0 or total_volume_mm3 <= 0:
+        return STEEL_DENSITY_T_PER_MM3
+    return total_weight_tons / total_volume_mm3
+
+
+def _demand_density_t_per_m3(demand, weight_unit):
+    return _demand_density_t_per_mm3(demand, weight_unit) * 1_000_000_000.0
+
+
 def _estimate_consumed_weight_tons(width_mm, length_mm, demand, weight_unit):
     thickness = _parse_thickness_from_demand(demand)
     if thickness:
-        return float(width_mm) * float(length_mm) * float(thickness) * STEEL_DENSITY_T_PER_MM3
+        density = _demand_density_t_per_mm3(demand, weight_unit)
+        return float(width_mm) * float(length_mm) * float(thickness) * density
 
     order_weight_tons = sum(
         _input_weight_to_tons(value, weight_unit) for value in demand.get("Weight", [])
@@ -279,6 +314,7 @@ def summarize_production(demand, solution, decoder_mode):
         "weight_unit": weight_unit,
         "input_weight_total_tons": float(input_weight_total_tons),
         "consumed_weight_tons": float(consumed_weight_tons),
+        "density_t_per_m3": float(_demand_density_t_per_m3(demand, weight_unit)),
     }
 
 

@@ -88,5 +88,6 @@ else {
 Write-Host ""
 Write-Host "Local environment is ready."
 Write-Host "Run with:"
-Write-Host "1. PowerShell: .\\run_main_ga.ps1"
-Write-Host "2. Directly: $venvPython scripts\\main_ga.py"
+Write-Host "1. Double-click: run_client_workflow.bat"
+Write-Host "2. PowerShell: .\\run_client_workflow.ps1"
+Write-Host "3. Directly: $venvPython run_client_workflow.py"

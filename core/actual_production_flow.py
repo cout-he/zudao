@@ -11,6 +11,7 @@ Current scope:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -98,6 +99,25 @@ MULTI_SPEC_RESULT_COLUMNS = [
     "真实利用率(%)",
     "条带数/阶段数",
     "惩罚值",
+    "图像输出",
+    "报告输出",
+    "备注",
+]
+
+MULTI_SPEC_EXPORT_COLUMNS = [
+    "分组编号",
+    "品名",
+    "厚度",
+    "规格种数",
+    "订单总片数",
+    "算法产出总片数",
+    "补切数",
+    "超产数",
+    "总重量",
+    "母板宽度",
+    "还原后总长度(mm)",
+    "真实利用率(%)",
+    "条带数/阶段数",
     "图像输出",
     "报告输出",
     "备注",
@@ -268,6 +288,31 @@ def apply_runtime_scale_factor(runtime: dict, scale_factor: int) -> None:
     runtime["cutting_report_module"].SCALE_FACTOR = int(scale_factor)
 
 
+def _format_progress_bar(current: int, total: int, width: int = 24) -> str:
+    if total <= 0:
+        return "[" + "-" * width + "]"
+    filled = int(round(width * current / total))
+    filled = max(0, min(width, filled))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _print_group_progress(
+    current: int,
+    total: int,
+    group_id: object,
+    name: object,
+    process_type: object,
+    state: str,
+) -> None:
+    percent = 100.0 * current / total if total else 100.0
+    bar = _format_progress_bar(current, total)
+    print(
+        f"{bar} {current}/{total} {percent:6.2f}% "
+        f"{state}: {group_id} {name} ({process_type})",
+        flush=True,
+    )
+
+
 def choose_multi_spec_strategy(group_row: dict, requested_decoder_mode: str) -> dict:
     total_pieces = int(group_row["总片数"])
 
@@ -309,8 +354,9 @@ def _derive_business_decision(row: pd.Series) -> pd.Series:
     note = str(row.get("备注", "") or "")
     makeup = 0 if pd.isna(row.get("补切数")) else int(row.get("补切数"))
     over = 0 if pd.isna(row.get("超产数")) else int(row.get("超产数"))
+    is_completed = status in {"完成", "已完成"}
 
-    if status != "已完成":
+    if not is_completed:
         if ("无法放入横向占宽" in note) or ("无法承接" in note) or ("外协" in note) or ("改规格" in note):
             return pd.Series(
                 {
@@ -489,13 +535,78 @@ def _summarize_group_production(runtime: dict, demand: dict, solution: dict, dec
     )
 
 
+def _extend_stage_based_shortages(
+    runtime: dict,
+    demand: dict,
+    solution: dict,
+    decoder_mode: str,
+    scale_factor: int,
+) -> list[str]:
+    if decoder_mode != "stage_based":
+        return []
+
+    notes: list[str] = []
+    production_summary = _summarize_group_production(
+        runtime=runtime,
+        demand=demand,
+        solution=solution,
+        decoder_mode=decoder_mode,
+    )
+    produced_totals = production_summary.get("produced_totals", {})
+    strips = solution.get("strips", [])
+
+    for type_id, order_count in enumerate(demand.get("num", [])):
+        shortage = int(order_count) - int(produced_totals.get(type_id, 0))
+        if shortage <= 0:
+            continue
+
+        target_strip = None
+        target_items = []
+        for strip in reversed(strips):
+            lane_items = [item for item in strip.items if item.type_id == type_id]
+            if lane_items:
+                target_strip = strip
+                target_items = lane_items
+                break
+
+        if target_strip is None or not target_items:
+            continue
+
+        lane_count = len(target_items)
+        item_length = float(target_items[0].length)
+        actual_length = float(target_strip.strip_length) * int(scale_factor)
+        current_per_lane = int(actual_length // item_length)
+        extra_cycles = int(math.ceil(shortage / lane_count))
+        required_actual_length = (current_per_lane + extra_cycles) * item_length
+
+        if required_actual_length <= actual_length:
+            continue
+
+        added_length = required_actual_length - actual_length
+        target_strip.strip_length = required_actual_length / int(scale_factor)
+        solution["total_length"] = sum(float(strip.strip_length) for strip in strips)
+        notes.append(
+            f"T{type_id + 1} 同刀位续切补足 {shortage} 件，"
+            f"增加走料 {added_length / 1000:.3f} m"
+        )
+
+    return notes
+
+
 def _build_unserviceable_groups(
     adapted_data: AdaptedProductionData,
     workflow_summary: pd.DataFrame,
 ) -> pd.DataFrame:
+    note_text = workflow_summary["备注"].astype(str)
+    status_text = workflow_summary["状态"].astype(str)
+    unserviceable_mask = status_text.str.contains("失败", na=False) & note_text.str.contains(
+        "无法放入|无法承接|超宽|两个朝向均无法放入",
+        na=False,
+        regex=True,
+    )
     failed_rows = workflow_summary.loc[
-        workflow_summary["备注"].astype(str).str.contains("无法放入横向占宽", na=False),
-        ["分组编号", "品名", "厚度", "规格种数", "母板宽度"],
+        unserviceable_mask,
+        ["分组编号", "品名", "厚度", "规格种数", "母板宽度", "备注"],
     ].copy()
 
     rows: list[dict] = []
@@ -504,10 +615,14 @@ def _build_unserviceable_groups(
         group_detail = adapted_data.printable_detail.loc[
             adapted_data.printable_detail["分组编号"] == group_row["分组编号"]
         ].copy()
-        oversize_detail = group_detail.loc[group_detail["短边"] > panel_width].copy()
+        oversize_detail = group_detail.loc[
+            (group_detail["短边"] > panel_width) | (group_detail["长边"] > panel_width)
+        ].copy()
 
         oversize_specs = sorted(oversize_detail["标准规格"].astype(str).unique().tolist())
         max_short_side = float(oversize_detail["短边"].max()) if not oversize_detail.empty else None
+        if not oversize_specs:
+            oversize_specs = sorted(group_detail["标准规格"].astype(str).unique().tolist())
 
         rows.append(
             {
@@ -628,6 +743,13 @@ def run_multi_spec_group(
     if int(solution["num_strips"]) <= 0 or float(solution["total_length"]) <= 0:
         raise ValueError("当前母板宽度下未生成有效排版方案")
 
+    continuation_notes = _extend_stage_based_shortages(
+        runtime=runtime,
+        demand=demand,
+        solution=solution,
+        decoder_mode=strategy["decoder_mode"],
+        scale_factor=strategy["scale_factor"],
+    )
     production_summary = _summarize_group_production(
         runtime=runtime,
         demand=demand,
@@ -661,6 +783,8 @@ def run_multi_spec_group(
         result_note = f"按 {strategy['decoder_mode']} 模式完成 GA 求解；{strategy['strategy_note']}"
     if orientation_note:
         result_note = f"{result_note}；排版朝向：{orientation_note}"
+    if continuation_notes:
+        result_note = f"{result_note}；" + "；".join(continuation_notes)
 
     return {
         "分组编号": group_row["分组编号"],
@@ -778,6 +902,29 @@ def _build_width_allocation_summary(workflow_summary: pd.DataFrame) -> pd.DataFr
     )
 
 
+def _single_spec_density_t_per_mm3(
+    *,
+    thickness: float,
+    layout_width: float,
+    layout_length: float,
+    order_total: int,
+    weight_total: float,
+) -> float:
+    try:
+        volume_mm3 = (
+            float(thickness)
+            * float(layout_width)
+            * float(layout_length)
+            * int(order_total)
+        )
+        weight_tons = float(weight_total) / 1000.0
+    except (TypeError, ValueError):
+        return 7.85e-9
+    if volume_mm3 <= 0 or weight_tons <= 0:
+        return 7.85e-9
+    return weight_tons / volume_mm3
+
+
 def _build_single_spec_report_text(
     *,
     group_id: str,
@@ -799,11 +946,18 @@ def _build_single_spec_report_text(
     utilization: float,
 ) -> str:
     input_weight_tons = float(weight_total) / 1000.0
+    density_t_per_mm3 = _single_spec_density_t_per_mm3(
+        thickness=thickness,
+        layout_width=layout_width,
+        layout_length=layout_length,
+        order_total=order_total,
+        weight_total=weight_total,
+    )
     consumed_weight_tons = (
         float(panel_width)
         * float(consumed_length)
         * float(thickness)
-        * 7.85e-9
+        * density_t_per_mm3
     )
     product_weight_tons = (
         input_weight_tons * float(produced_total) / float(order_total)
@@ -927,11 +1081,18 @@ def _write_single_spec_report_xlsx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     input_weight_tons = float(weight_total) / 1000.0
+    density_t_per_mm3 = _single_spec_density_t_per_mm3(
+        thickness=thickness,
+        layout_width=layout_width,
+        layout_length=layout_length,
+        order_total=order_total,
+        weight_total=weight_total,
+    )
     consumed_weight_tons = (
         float(panel_width)
         * float(consumed_length)
         * float(thickness)
-        * 7.85e-9
+        * density_t_per_mm3
     )
     product_weight_tons = (
         input_weight_tons * float(produced_total) / float(order_total)
@@ -1362,7 +1523,6 @@ def execute_actual_production_workflow(
                 "备注": multi_result["备注"],
             }
         )
-
     workflow_summary = pd.DataFrame(workflow_rows)
     if workflow_summary.empty:
         workflow_summary = pd.DataFrame(columns=WORKFLOW_SUMMARY_COLUMNS)
@@ -1522,8 +1682,22 @@ def execute_actual_production_workflow(
     multi_spec_rows: list[dict] = []
     workflow_rows: list[dict] = []
 
-    for group_row in routing_summary.to_dict(orient="records"):
+    group_records = routing_summary.to_dict(orient="records")
+    total_groups = len(group_records)
+    if verbose:
+        print(f"开始处理分组：共 {total_groups} 组", flush=True)
+
+    for group_index, group_row in enumerate(group_records, start=1):
         group_id = group_row[route_group_id_col]
+        if verbose:
+            _print_group_progress(
+                current=group_index,
+                total=total_groups,
+                group_id=group_id,
+                name=group_row[route_name_col],
+                process_type=group_row[route_route_type_col],
+                state="开始",
+            )
 
         if pd.notna(group_row[route_output_total_col]):
             single_spec_output_dir = output_dir / f"width_{int(group_row[route_panel_width_col])}"
@@ -1596,6 +1770,15 @@ def execute_actual_production_workflow(
                     WF_NOTE_COL: group_row[route_note_col],
                 }
             )
+            if verbose:
+                _print_group_progress(
+                    current=group_index,
+                    total=total_groups,
+                    group_id=group_id,
+                    name=group_row[route_name_col],
+                    process_type=group_row[route_route_type_col],
+                    state="完成",
+                )
             continue
 
         group_detail = detail.loc[detail[detail_group_id_col] == group_id].copy()
@@ -1731,6 +1914,15 @@ def execute_actual_production_workflow(
                     WF_NOTE_COL: multi_result[MS_NOTE_COL],
                 }
             )
+            if verbose:
+                _print_group_progress(
+                    current=group_index,
+                    total=total_groups,
+                    group_id=group_id,
+                    name=group_row[route_name_col],
+                    process_type=group_row[route_route_type_col],
+                    state="完成",
+                )
             continue
 
         attempted_text = ", ".join(str(width) for width in candidate_panel_widths)
@@ -1761,6 +1953,15 @@ def execute_actual_production_workflow(
                 WF_NOTE_COL: f"{failure_note}；候选宽度：{attempted_text}",
             }
         )
+        if verbose:
+            _print_group_progress(
+                current=group_index,
+                total=total_groups,
+                group_id=group_id,
+                name=group_row[route_name_col],
+                process_type=group_row[route_route_type_col],
+                state="失败",
+            )
 
     workflow_summary = pd.DataFrame(workflow_rows)
     if workflow_summary.empty:
@@ -1818,6 +2019,16 @@ def export_actual_production_workflow(
     return output_path
 
 
+def _build_multi_spec_export_view(multi_spec_results: pd.DataFrame) -> pd.DataFrame:
+    if multi_spec_results.empty:
+        return pd.DataFrame(columns=MULTI_SPEC_EXPORT_COLUMNS)
+    available_columns = [
+        column for column in MULTI_SPEC_EXPORT_COLUMNS
+        if column in multi_spec_results.columns
+    ]
+    return multi_spec_results.loc[:, available_columns].copy()
+
+
 def export_actual_production_workflow(
     adapted_data: AdaptedProductionData,
     routing_result: GroupRoutingResult,
@@ -1835,7 +2046,11 @@ def export_actual_production_workflow(
         execution_result.workflow_summary.to_excel(writer, sheet_name="主流程汇总", index=False)
         execution_result.width_allocation_summary.to_excel(writer, sheet_name="宽度分配汇总", index=False)
         execution_result.single_spec_results.to_excel(writer, sheet_name="单规格结果", index=False)
-        execution_result.multi_spec_results.to_excel(writer, sheet_name="多规格结果", index=False)
+        _build_multi_spec_export_view(execution_result.multi_spec_results).to_excel(
+            writer,
+            sheet_name="多规格结果",
+            index=False,
+        )
         execution_result.unserviceable_groups.to_excel(writer, sheet_name="无法承接分组", index=False)
 
     return output_path

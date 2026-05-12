@@ -65,22 +65,6 @@ def resolve_python_executable() -> Path:
     raise FileNotFoundError("未找到可用的 Python 环境，请先准备 .venv_ga 或 .venv。")
 
 
-def list_excel_files(directory: Path) -> list[Path]:
-    if not directory.exists():
-        return []
-    return sorted(
-        [
-            path
-            for path in directory.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
-            and not path.name.startswith("~$")
-        ],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-
-
 def sanitize_name(text: str) -> str:
     cleaned = "".join(
         char if char not in '<>:"/\\|?*' else "_"
@@ -91,33 +75,6 @@ def sanitize_name(text: str) -> str:
 
 
 def choose_input_file() -> Path:
-    explicit_input = os.environ.get("RUN_CLIENT_WORKFLOW_INPUT", "").strip()
-    if explicit_input:
-        input_path = Path(explicit_input)
-        if input_path.exists() and input_path.is_file():
-            return input_path
-        raise FileNotFoundError(f"指定的输入文件不存在：{input_path}")
-
-    if os.environ.get("RUN_CLIENT_WORKFLOW_NO_DIALOG") == "1":
-        excel_files = list_excel_files(DATA_DIR)
-        if not excel_files:
-            raise FileNotFoundError(f"在 {DATA_DIR} 下未找到可用的 Excel 文件。")
-
-        if len(excel_files) == 1:
-            return excel_files[0]
-
-        preferred_files = [
-            path
-            for path in excel_files
-            if "实际生产状态表" in path.stem or "生产状态" in path.stem
-        ]
-        if len(preferred_files) == 1:
-            return preferred_files[0]
-
-        raise FileNotFoundError(
-            "data 文件夹下存在多个 Excel 文件，无法自动判断输入文件，请手动选择。"
-        )
-
     try:
         import tkinter
         from tkinter import filedialog
@@ -135,24 +92,10 @@ def choose_input_file() -> Path:
         root.destroy()
         if selected:
             return Path(selected)
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError("无法打开 Excel 文件选择窗口，请确认当前环境支持 tkinter。") from exc
 
-    excel_files = list_excel_files(DATA_DIR)
-    if len(excel_files) == 1:
-        return excel_files[0]
-
-    preferred_files = [
-        path
-        for path in excel_files
-        if "实际生产状态表" in path.stem or "生产状态" in path.stem
-    ]
-    if len(preferred_files) == 1:
-        return preferred_files[0]
-
-    raise FileNotFoundError(
-        "未选择输入文件，且 data 文件夹下无法唯一确定默认 Excel 文件。"
-    )
+    raise FileNotFoundError("未选择输入文件，程序已取消。")
 
 
 def build_output_paths(input_file: Path) -> tuple[Path, Path, Path, Path]:
@@ -169,14 +112,15 @@ def build_output_paths(input_file: Path) -> tuple[Path, Path, Path, Path]:
     return run_dir, output_file, artifact_dir, log_file
 
 
-def run_workflow() -> tuple[int, Path, Path, Path, str]:
+def run_workflow() -> tuple[int, Path, Path, Path, Path, Path, str]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     python_exe = resolve_python_executable()
     input_file = choose_input_file()
-    run_dir, output_file, artifact_dir, _ = build_output_paths(input_file)
+    run_dir, output_file, artifact_dir, log_file = build_output_paths(input_file)
 
     command = [
         str(python_exe),
+        "-u",
         "-X",
         "utf8",
         str(MAIN_SCRIPT),
@@ -194,33 +138,46 @@ def run_workflow() -> tuple[int, Path, Path, Path, str]:
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
 
-    completed = subprocess.run(
-        command,
-        cwd=str(ROOT_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    output_chunks: list[str] = []
+    with log_file.open("w", encoding="utf-8") as log_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(ROOT_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_chunks.append(line)
+            print(line, end="", flush=True)
+            log_handle.write(line)
+            log_handle.flush()
+
+        exit_code = process.wait()
 
     return (
-        int(completed.returncode),
+        int(exit_code),
         input_file,
         run_dir,
         output_file,
         artifact_dir,
-        completed.stdout or "",
+        log_file,
+        "".join(output_chunks),
     )
 
 
 def main() -> None:
     error_log_file: Path | None = None
     try:
-        exit_code, input_file, run_dir, output_file, artifact_dir, run_output = run_workflow()
+        exit_code, input_file, run_dir, output_file, artifact_dir, log_file, run_output = run_workflow()
         error_log_file = run_dir / DEFAULT_ERROR_LOG_NAME
     except Exception:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -249,7 +206,8 @@ def main() -> None:
         f"输入文件：\n{input_file}\n\n"
         f"本次输出目录：\n{run_dir}\n\n"
         f"结果 Excel：\n{output_file}\n\n"
-        f"图和报告目录：\n{artifact_dir}",
+        f"图和报告目录：\n{artifact_dir}\n\n"
+        f"运行日志：\n{log_file}",
     )
 
 

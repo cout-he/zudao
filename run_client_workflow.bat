@@ -21,35 +21,27 @@ if "%PYTHON_EXE%"=="" (
     exit /b 1
 )
 
-set "LOG_FILE=%ROOT%outputs\run_client_workflow.log"
-
 if not exist "%ROOT%outputs" (
     mkdir "%ROOT%outputs"
 )
 
 echo ============================================================
-echo Running actual production workflow...
-echo Input  : default workbook under the data folder
-echo Output : default workbook under the outputs folder
-echo Log    : %LOG_FILE%
+echo Running client workflow...
+echo Input  : please select an Excel workbook in the popup window
+echo Output : outputs\client_runs
+echo Log    : saved inside the current run folder
 echo ============================================================
 echo.
 
-"%PYTHON_EXE%" "%ROOT%scripts\main_actual_production.py" ^
-  --decoder-mode auto ^
-  --panel-widths 1000,1240,1250,1500 > "%LOG_FILE%" 2>&1
+"%PYTHON_EXE%" "%ROOT%run_client_workflow.py"
 
 if errorlevel 1 (
-    echo Workflow failed. Please check:
-    echo   %LOG_FILE%
+    echo Workflow failed. Please check the latest folder under outputs\client_runs.
     pause
     exit /b 1
 )
 
 echo Workflow completed successfully.
-echo Result workbook and artifact paths were written by the program.
-echo Please check the outputs folder.
-echo Log file:
-echo   %LOG_FILE%
+echo Please check outputs\client_runs for the result workbook, drawings and reports.
 echo.
 pause

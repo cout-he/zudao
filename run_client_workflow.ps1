@@ -21,25 +21,22 @@ else {
 }
 
 $logFile = Join-Path $root "outputs\run_client_workflow.log"
-$mainScript = Join-Path $root "scripts\main_actual_production.py"
+$entryScript = Join-Path $root "run_client_workflow.py"
 
 New-Item -ItemType Directory -Force -Path (Join-Path $root "outputs") | Out-Null
 
 Write-Host "============================================================"
-Write-Host "Running actual production workflow..."
-Write-Host "Input  : default workbook under the data folder"
-Write-Host "Output : default workbook under the outputs folder"
+Write-Host "Running client workflow..."
+Write-Host "Input  : please select an Excel workbook in the popup window"
+Write-Host "Output : outputs\client_runs"
 Write-Host "Log    : $logFile"
 Write-Host "============================================================"
 Write-Host ""
 
-& $pythonExe $mainScript `
-    --decoder-mode auto `
-    --panel-widths 1000,1240,1250,1500 *>&1 | Tee-Object -FilePath $logFile
+& $pythonExe $entryScript *>&1 | Tee-Object -FilePath $logFile
 
 Write-Host ""
 Write-Host "Workflow completed successfully."
-Write-Host "Result workbook and artifact paths were written by the program."
-Write-Host "Please check the outputs folder."
+Write-Host "Please check outputs\client_runs for the result workbook, drawings and reports."
 Write-Host "Log file:"
 Write-Host "  $logFile"

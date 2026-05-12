@@ -1,4 +1,5 @@
 .venv/
+.venv_ga/
 __pycache__/
 *.pyc
 *.pyo
@@ -14,3 +15,6 @@ outputs/*.png
 outputs/*.jpg
 outputs/*.jpeg
 outputs/*.pdf
+outputs/client_runs/
+
+archive_non_delivery/

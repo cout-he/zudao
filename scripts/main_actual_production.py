@@ -91,6 +91,34 @@ def build_width_usage_text(width_summary) -> str:
     return ", ".join(parts)
 
 
+def print_failed_group_details(workflow_summary) -> None:
+    if workflow_summary.empty or "状态" not in workflow_summary.columns:
+        return
+
+    failed_rows = workflow_summary.loc[
+        workflow_summary["状态"].astype(str).str.contains("失败", na=False)
+    ].copy()
+    if failed_rows.empty:
+        return
+
+    print("失败组明细:")
+    for row in failed_rows.to_dict(orient="records"):
+        group_id = row.get("分组编号", "")
+        name = row.get("品名", "")
+        thickness = row.get("厚度", "")
+        spec_count = row.get("规格种数", "")
+        panel_width = row.get("母板宽度", "")
+        order_total = row.get("订单总片数", "")
+        note = str(row.get("备注", "") or "").strip()
+        print(
+            f"  - {group_id}: {name} 厚度 {thickness} mm, "
+            f"规格种数 {spec_count}, 订单 {order_total} 件, "
+            f"候选/记录母板宽度 {panel_width} mm"
+        )
+        if note:
+            print(f"    原因: {note}")
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -143,6 +171,7 @@ def main() -> None:
     print(f"宽度分配: {width_usage_text}")
     print(f"完成组数: {summary.completed_groups}/{summary.total_groups}")
     print(f"失败组数: {summary.failed_groups}")
+    print_failed_group_details(execution_result.workflow_summary)
     print(f"订单数补切合计: {summary.total_makeup_pieces}")
     print(f"超产合计: {summary.total_overproduction_pieces}")
     print(f"总母板面积: {summary.total_panel_area:.0f}")
